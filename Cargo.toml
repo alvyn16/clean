@@ -1,0 +1,59 @@
+[package]
+name = "clean"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+gpui-kit = "0.10.0"
+html2text = "0.16"
+imap = "2.4"
+keyring = "4.2"
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "hostname",
+    "native-tls",
+    "smtp-transport",
+] }
+mailparse = "0.18"
+native-tls = "0.2"
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
+rpassword = "7"
+rusqlite = { version = "0.43", default-features = false, features = [
+    "bundled",
+    "cache",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Keep framework dependencies optimized while app code stays in Debug.
+# This does not speed up compilation; it makes `cargo run` usable.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=clean
+GenericName=Mail Client
+Comment=Mail, without the noise
+Exec=clean
+Icon=clean
+Terminal=false
+Categories=Network;Email;Office;
+Keywords=mail;email;imap;smtp;
+StartupNotify=true
+StartupWMClass=dev.alvyn.clean
