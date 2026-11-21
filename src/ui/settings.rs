@@ -3,11 +3,12 @@ use gpui_kit::*;
 use crate::theme::{Palette, Rgba, ThemeMode};
 use crate::ui::model::SetupStep;
 use crate::ui::widgets::*;
-use crate::ui::{CleanApp, Screen};
+use crate::ui::{CleanApp, Field, Screen};
 
-const TABS: [(&str, IconName); 5] = [
+const TABS: [(&str, IconName); 6] = [
     ("Appearance", IconName::Palette),
     ("Accounts", IconName::User),
+    ("Calendar", IconName::Calendar),
     ("Notifications", IconName::Bell),
     ("Shortcuts", IconName::Keyboard),
     ("About", IconName::Info),
@@ -207,8 +208,9 @@ fn content(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
         .child(match app.settings_tab {
             0 => appearance(app, cx).into_any_element(),
             1 => accounts(app, cx).into_any_element(),
-            2 => notifications(app, cx).into_any_element(),
-            3 => shortcuts(app).into_any_element(),
+            2 => calendar(app, cx).into_any_element(),
+            3 => notifications(app, cx).into_any_element(),
+            4 => shortcuts(app).into_any_element(),
             _ => about(app, cx).into_any_element(),
         })
         .child(
@@ -741,6 +743,158 @@ fn toggle_row(
                         .bg(Rgba::hex(0xFFFFFF).gpui())
                         .shadow_sm(),
                 ),
+        )
+}
+
+fn calendar_field(
+    app: &CleanApp,
+    id: &'static str,
+    field: Field,
+    label: &'static str,
+    value: &str,
+    placeholder: &str,
+    password: bool,
+    cx: &mut Context<CleanApp>,
+) -> impl IntoElement {
+    let p = &app.model.palette;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .h(px(38.0))
+        .cursor_text()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.focus_field(field, window, cx);
+        }))
+        .child(
+            div()
+                .w(px(74.0))
+                .flex_shrink_0()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(p.faint.gpui())
+                .child(label),
+        )
+        .child(field_value(
+            value,
+            placeholder,
+            app.model.focused == Some(field),
+            password,
+            p,
+        ))
+}
+
+fn calendar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
+    let model = &app.model;
+    let p = &model.palette;
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.0))
+        .child(section(
+            p,
+            "CalDAV calendar",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(calendar_field(
+                    app,
+                    "calendar-url",
+                    Field::CalendarUrl,
+                    "URL",
+                    &model.calendar_url,
+                    "https://caldav.example.com/calendars/me/",
+                    false,
+                    cx,
+                ))
+                .child(div().h(px(1.0)).w_full().bg(p.border.with_alpha(0.4).gpui()))
+                .child(calendar_field(
+                    app,
+                    "calendar-user",
+                    Field::CalendarUser,
+                    "Username",
+                    &model.calendar_user,
+                    "me@example.com",
+                    false,
+                    cx,
+                ))
+                .child(div().h(px(1.0)).w_full().bg(p.border.with_alpha(0.4).gpui()))
+                .child(calendar_field(
+                    app,
+                    "calendar-password",
+                    Field::CalendarPassword,
+                    "Password",
+                    &model.calendar_password,
+                    "App password (stored in keyring)",
+                    true,
+                    cx,
+                )),
+        ))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(
+                    div()
+                        .id("calendar-save")
+                        .flex()
+                        .items_center()
+                        .h(px(30.0))
+                        .px(px(13.0))
+                        .rounded(px(7.0))
+                        .bg(p.accent.gpui())
+                        .cursor_pointer()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.accent_ink.gpui())
+                        .hover(|style| style.opacity(0.92))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.save_calendar_settings(cx);
+                        }))
+                        .child("Save & sync"),
+                )
+                .child(
+                    div()
+                        .id("calendar-sync")
+                        .flex()
+                        .items_center()
+                        .h(px(30.0))
+                        .px(px(13.0))
+                        .rounded(px(7.0))
+                        .bg(p.inset.gpui())
+                        .cursor_pointer()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.text.gpui())
+                        .hover(|style| style.bg(p.hover.gpui()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sync_calendar(cx);
+                        }))
+                        .child("Sync now"),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(text(
+                    model.calendar_status.clone(),
+                    11.0,
+                    FontWeight::NORMAL,
+                    p.muted,
+                ))
+                .child(text(
+                    "Events are stored locally and mirrored to your CalDAV calendar. \
+                     Password is kept in the system keyring.",
+                    10.5,
+                    FontWeight::NORMAL,
+                    p.faint,
+                )),
         )
 }
 

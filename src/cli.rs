@@ -37,6 +37,8 @@ pub enum Command {
         #[arg(long, default_value_t = 50)]
         limit: u32,
     },
+    /// Sync the CalDAV calendar.
+    CalendarSync,
     /// Connect or disconnect a provider.
     Auth {
         #[command(subcommand)]
@@ -77,6 +79,7 @@ pub fn run(command: Command) -> Result<()> {
         Command::Search { query, limit } => search(&query, limit),
         Command::Folders { account } => folders(account.as_deref()),
         Command::Sync { account, limit } => sync_mail(account.as_deref(), limit),
+        Command::CalendarSync => calendar_sync(),
         Command::Auth { action } => auth_provider(action),
         Command::Ui => ui::run(),
         Command::Setup => ui::run_setup(),
@@ -246,4 +249,15 @@ fn truncate(value: &str, max: usize) -> String {
         out.push('…');
         out
     }
+}
+
+fn calendar_sync() -> Result<()> {
+    let config = Config::load()?;
+    let db = Db::open_default()?;
+    let report = crate::calendar_sync::sync(&config, &db)?;
+    println!(
+        "calendar: {} pulled, {} pushed, {} removed",
+        report.pulled, report.pushed, report.deleted
+    );
+    Ok(())
 }

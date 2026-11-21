@@ -57,6 +57,9 @@ pub enum Field {
     EventDate,
     EventStart,
     EventEnd,
+    CalendarUrl,
+    CalendarUser,
+    CalendarPassword,
 }
 
 #[derive(Clone, Debug)]
@@ -271,6 +274,11 @@ pub struct Model {
     pub toast: Option<(String, std::time::Instant)>,
     pub today: NaiveDate,
     pub week_start: NaiveDate,
+    /// Draft values for the CalDAV settings tab.
+    pub calendar_url: String,
+    pub calendar_user: String,
+    pub calendar_password: String,
+    pub calendar_status: String,
     pub draft_to: String,
     pub draft_cc: String,
     pub draft_bcc: String,
@@ -328,6 +336,9 @@ impl Model {
     pub fn new(force_setup: bool) -> Self {
         let config = Config::load().unwrap_or_default();
         let need_onboarding = force_setup || !config.onboarding.complete;
+        let calendar_url = config.calendar.url.clone();
+        let calendar_user = config.calendar.username.clone();
+        let calendar_configured = crate::calendar_sync::is_configured(&config);
         let db = Db::open_default().ok();
 
         let today = Local::now().date_naive();
@@ -358,6 +369,14 @@ impl Model {
             toast: None,
             today,
             week_start: week_start(today),
+            calendar_url,
+            calendar_user,
+            calendar_password: String::new(),
+            calendar_status: if calendar_configured {
+                "CalDAV configured".into()
+            } else {
+                "No calendar connected".into()
+            },
             draft_to: String::new(),
             draft_cc: String::new(),
             draft_bcc: String::new(),
@@ -521,6 +540,11 @@ impl Model {
                 draft.emoji
             },
             color: draft.color as i32,
+            uid: String::new(),
+            etag: String::new(),
+            href: String::new(),
+            remote: false,
+            deleted: false,
         };
         let Some(db) = self.db.as_ref() else {
             return false;

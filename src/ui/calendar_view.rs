@@ -17,6 +17,10 @@ pub fn calendar_view(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoEle
     let days: Vec<_> = (0..7)
         .map(|index| model.week_start + Duration::days(index))
         .collect();
+    let mut columns = Vec::new();
+    for (index, day) in days.iter().enumerate() {
+        columns.push(day_column(app, model, p, *day, index == 6, cx));
+    }
 
     div()
         .flex()
@@ -51,9 +55,7 @@ pub fn calendar_view(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoEle
                                 .flex()
                                 .flex_1()
                                 .min_w(px(0.0))
-                                .children(days.iter().enumerate().map(|(index, day)| {
-                                    day_column(model, p, *day, index == 6)
-                                })),
+                                .children(columns),
                         ),
                 ),
         )
@@ -172,6 +174,16 @@ fn toolbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                                     .child(*label)
                             },
                         )),
+                )
+                .child(
+                    icon_button(
+                        "cal-sync",
+                        IconName::RefreshCw,
+                        p.muted,
+                        p.hover,
+                        14.0,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.sync_calendar(cx))),
                 )
                 .child(
                     div()
@@ -304,11 +316,13 @@ fn time_gutter(p: &Palette) -> impl IntoElement {
 }
 
 fn day_column(
+    _app: &CleanApp,
     model: &Model,
     p: &Palette,
     day: chrono::NaiveDate,
     last: bool,
-) -> impl IntoElement {
+    cx: &mut Context<CleanApp>,
+) -> AnyElement {
     let events: Vec<&CalendarEvent> = model
         .events
         .iter()
@@ -371,6 +385,7 @@ fn day_column(
             let height = (((end.saturating_sub(start)) as f32 / 60.0) * HOUR_HEIGHT - 4.0)
                 .max(20.0);
             let color = event_color(event.color, p.is_dark);
+            let event_id = event.id;
 
             div()
                 .id(("cal-event", event.id))
@@ -391,6 +406,9 @@ fn day_column(
                 .overflow_hidden()
                 .cursor_pointer()
                 .hover(|style| style.bg(color.with_alpha(0.28).gpui()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.delete_calendar_event(event_id, cx);
+                }))
                 .child(
                     div()
                         .flex()
@@ -414,4 +432,5 @@ fn day_column(
                         .child(event.time_label()),
                 )
         }))
+        .into_any_element()
 }

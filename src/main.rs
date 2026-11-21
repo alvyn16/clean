@@ -3,6 +3,8 @@
 // warnings so release builds are easy to read.
 #![allow(dead_code)]
 
+mod calendar_dav;
+mod calendar_sync;
 mod cli;
 mod config;
 mod db;

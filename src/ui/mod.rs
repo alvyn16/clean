@@ -134,6 +134,7 @@ impl CleanApp {
         app.load_sender_avatars(cx);
         app.start_live_sync(cx);
         app.start_idle_listeners(cx);
+        app.start_calendar_sync_loop(cx);
         let initial_id = app.model.messages.get(app.model.selected.unwrap_or(0)).map(|m| m.row.id);
         let initial_html = app
             .model
@@ -885,6 +886,9 @@ impl CleanApp {
             Field::DraftSubject => &mut self.model.draft_subject,
             Field::DraftBody => &mut self.model.draft_body,
             Field::AttachmentPath => &mut self.model.attachment_path,
+            Field::CalendarUrl => &mut self.model.calendar_url,
+            Field::CalendarUser => &mut self.model.calendar_user,
+            Field::CalendarPassword => &mut self.model.calendar_password,
             Field::EventTitle => &mut self.model.event_draft.title,
             Field::EventDate => &mut self.model.event_draft.day,
             Field::EventStart => &mut self.model.event_draft.start,
@@ -905,6 +909,9 @@ impl CleanApp {
             Field::EventStart => Some(Field::EventEnd),
             Field::EventEnd => Some(Field::EventTitle),
             Field::Search | Field::AttachmentPath => None,
+            Field::CalendarUrl => Some(Field::CalendarUser),
+            Field::CalendarUser => Some(Field::CalendarPassword),
+            Field::CalendarPassword => Some(Field::CalendarUrl),
             Field::DraftBody => Some(Field::AttachmentPath),
         };
     }
@@ -938,6 +945,9 @@ impl CleanApp {
             Field::Search => {
                 self.model.focused = None;
                 self.search_now(cx);
+            }
+            Field::CalendarUrl | Field::CalendarUser | Field::CalendarPassword => {
+                self.save_calendar_settings(cx);
             }
             field @ (Field::EventTitle
             | Field::EventDate
@@ -1596,6 +1606,111 @@ impl CleanApp {
                 let interval = this.upgrade().map(|h| {
                     h.read_with(cx, |this, _| this.model.config.appearance.sync_interval_secs.max(3))
                 }).unwrap_or(10);
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(interval))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    /// Delete an event locally (and, on the next sync, from CalDAV).
+    fn delete_calendar_event(&mut self, id: usize, cx: &mut Context<Self>) {
+        if let Some(db) = self.model.db.as_ref() {
+            if let Err(error) = db.delete_event(id as i64) {
+                self.toast(format!("Could not delete event: {error:#}"), cx);
+                return;
+            }
+        }
+        self.model.reload_events();
+        self.toast("Event removed", cx);
+        self.sync_calendar(cx);
+    }
+
+    /// Persist the CalDAV settings from the Calendar settings tab and run an
+    /// immediate sync so the user gets feedback before leaving the sheet.
+    fn save_calendar_settings(&mut self, cx: &mut Context<Self>) {
+        let url = self.model.calendar_url.trim().to_string();
+        let username = self.model.calendar_user.trim().to_string();
+        let password = self.model.calendar_password.clone();
+        let mut config = self.model.config.clone();
+        config.calendar.url = url;
+        config.calendar.username = username;
+        if let Err(error) = config.save() {
+            self.toast(format!("Could not save calendar settings: {error:#}"), cx);
+            return;
+        }
+        if !password.is_empty() {
+            if let Err(error) = crate::secrets::set(crate::secrets::CALDAV, "password", &password) {
+                self.toast(format!("Could not store calendar password: {error:#}"), cx);
+                return;
+            }
+            self.model.calendar_password.clear();
+        }
+        self.model.config = config;
+        self.model.calendar_status = "Saving…".into();
+        cx.notify();
+        self.sync_calendar(cx);
+    }
+
+    /// Two-way sync of local events with the configured CalDAV calendar.
+    fn sync_calendar(&mut self, cx: &mut Context<Self>) {
+        if !crate::calendar_sync::is_configured(&self.model.config) {
+            self.model.calendar_status = "Add a CalDAV URL in Settings → Calendar".into();
+            cx.notify();
+            return;
+        }
+        self.model.calendar_status = "Syncing calendar…".into();
+        cx.notify();
+        let config = self.model.config.clone();
+        let task = cx.background_executor().spawn(async move {
+            let db = crate::db::Db::open_default()?;
+            crate::calendar_sync::sync(&config, &db)
+        });
+        cx.spawn(async move |this, cx| {
+            match task.await {
+                Ok(report) => {
+                    this.update(cx, |this, cx| {
+                        this.model.calendar_status = format!(
+                            "Synced · {} pulled · {} pushed · {} removed",
+                            report.pulled, report.pushed, report.deleted
+                        );
+                        this.model.reload_events();
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(error) => {
+                    tracing::warn!("calendar sync failed: {error:#}");
+                    this.update(cx, |this, cx| {
+                        this.model.calendar_status = format!("Sync failed: {error:#}");
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Background loop that syncs the calendar periodically when configured.
+    fn start_calendar_sync_loop(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let configured = this.upgrade().map(|handle| {
+                    handle.read_with(cx, |this: &CleanApp, _| {
+                        crate::calendar_sync::is_configured(&this.model.config)
+                    })
+                }).unwrap_or(false);
+                let interval = this.upgrade().map(|handle| {
+                    handle.read_with(cx, |this: &CleanApp, _| {
+                        this.model.config.calendar.sync_interval_secs.max(60)
+                    })
+                }).unwrap_or(300);
+
+                if configured {
+                    this.update(cx, |this, cx| this.sync_calendar(cx)).ok();
+                }
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(interval))
                     .await;

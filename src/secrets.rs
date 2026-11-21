@@ -4,6 +4,8 @@ const SERVICE: &str = "clean";
 
 /// Pseudo account id for credentials that belong to the app, not one mailbox.
 pub const APP: &str = "__app__";
+/// Pseudo account id for the CalDAV calendar password.
+pub const CALDAV: &str = "__caldav__";
 
 fn entry(account_id: &str, kind: &str) -> Result<keyring::Entry> {
     let username = format!("{account_id}:{kind}");

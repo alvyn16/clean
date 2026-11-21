@@ -11,6 +11,7 @@ pub struct Config {
     pub window: WindowConfig,
     pub onboarding: Onboarding,
     pub google: GoogleConfig,
+    pub calendar: CalendarConfig,
     pub accounts: Vec<AccountConfig>,
 }
 
@@ -21,6 +22,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             onboarding: Onboarding::default(),
             google: GoogleConfig::default(),
+            calendar: CalendarConfig::default(),
             accounts: Vec::new(),
         }
     }
@@ -68,6 +70,26 @@ impl GoogleConfig {
         self.client_id
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
+    }
+}
+
+/// Settings for an optional CalDAV calendar. The password is kept in the
+/// keyring; only the URL and username live in config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalendarConfig {
+    pub url: String,
+    pub username: String,
+    pub sync_interval_secs: u64,
+}
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            username: String::new(),
+            sync_interval_secs: 300,
+        }
     }
 }
 

@@ -86,6 +86,16 @@ pub struct EventRow {
     pub end_min: i32,
     pub emoji: String,
     pub color: i32,
+    /// CalDAV UID; empty for events that have never been uploaded.
+    pub uid: String,
+    /// CalDAV ETag, used for conditional updates and deletes.
+    pub etag: String,
+    /// Resource path on the CalDAV server.
+    pub href: String,
+    /// True once a server copy exists.
+    pub remote: bool,
+    /// Locally deleted, waiting to be removed from the server.
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -129,6 +139,27 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)
             .context("initializing the local mail cache")?;
+        // Older databases predate the calendar sync columns.
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN uid TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN etag TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN href TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN remote INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         // Older databases predate the message `cc_addrs` column.
         let _ = conn.execute(
             "ALTER TABLE messages ADD COLUMN cc_addrs TEXT NOT NULL DEFAULT ''",
@@ -761,8 +792,8 @@ impl Db {
     /// All locally stored calendar events, in chronological order.
     pub fn events(&self) -> Result<Vec<EventRow>> {
         let mut statement = self.conn.prepare(
-            "SELECT id, title, day, start_min, end_min, emoji, color
-             FROM events ORDER BY day, start_min",
+            "SELECT id, title, day, start_min, end_min, emoji, color, uid, etag, href, remote, deleted
+             FROM events WHERE deleted = 0 ORDER BY day, start_min",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(EventRow {
@@ -773,15 +804,112 @@ impl Db {
                 end_min: row.get(4)?,
                 emoji: row.get(5)?,
                 color: row.get(6)?,
+                uid: row.get(7)?,
+                etag: row.get(8)?,
+                href: row.get(9)?,
+                remote: row.get::<_, i64>(10)? != 0,
+                deleted: row.get::<_, i64>(11)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    fn all_events_where(&self, clause: &str) -> Result<Vec<EventRow>> {
+        let sql = format!(
+            "SELECT id, title, day, start_min, end_min, emoji, color, uid, etag, href, remote, deleted
+             FROM events WHERE {clause} ORDER BY day, start_min"
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map([], |row| {
+            Ok(EventRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                day: row.get(2)?,
+                start_min: row.get(3)?,
+                end_min: row.get(4)?,
+                emoji: row.get(5)?,
+                color: row.get(6)?,
+                uid: row.get(7)?,
+                etag: row.get(8)?,
+                href: row.get(9)?,
+                remote: row.get::<_, i64>(10)? != 0,
+                deleted: row.get::<_, i64>(11)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn event_by_uid(&self, uid: &str) -> Result<Option<EventRow>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, title, day, start_min, end_min, emoji, color, uid, etag, href, remote, deleted
+             FROM events WHERE uid = ?1 LIMIT 1",
+        )?;
+        let mut rows = statement.query_map(params![uid], |row| {
+            Ok(EventRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                day: row.get(2)?,
+                start_min: row.get(3)?,
+                end_min: row.get(4)?,
+                emoji: row.get(5)?,
+                color: row.get(6)?,
+                uid: row.get(7)?,
+                etag: row.get(8)?,
+                href: row.get(9)?,
+                remote: row.get::<_, i64>(10)? != 0,
+                deleted: row.get::<_, i64>(11)? != 0,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn remote_events(&self) -> Result<Vec<EventRow>> {
+        self.all_events_where("remote = 1 AND deleted = 0")
+    }
+
+    pub fn pending_events(&self) -> Result<Vec<EventRow>> {
+        self.all_events_where("remote = 0 AND deleted = 0")
+    }
+
+    pub fn deleted_events(&self) -> Result<Vec<EventRow>> {
+        self.all_events_where("deleted = 1")
+    }
+
+    pub fn mark_event_remote(&self, id: i64, uid: &str, etag: &str, href: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE events SET uid = ?2, etag = ?3, href = ?4, remote = 1 WHERE id = ?1",
+            params![id, uid, etag, href],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_remote_event(
+        &self,
+        id: i64,
+        title: &str,
+        day: &str,
+        start_min: i32,
+        end_min: i32,
+        etag: &str,
+        href: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE events SET title = ?2, day = ?3, start_min = ?4, end_min = ?5,
+                    etag = ?6, href = ?7 WHERE id = ?1",
+            params![id, title, day, start_min, end_min, etag, href],
+        )?;
+        Ok(())
+    }
+
+    pub fn hard_delete_event(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM events WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn add_event(&self, event: &EventRow) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO events (title, day, start_min, end_min, emoji, color)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO events (title, day, start_min, end_min, emoji, color, uid, etag, href, remote, deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 event.title,
                 event.day,
@@ -789,6 +917,11 @@ impl Db {
                 event.end_min,
                 event.emoji,
                 event.color,
+                event.uid,
+                event.etag,
+                event.href,
+                event.remote as i64,
+                event.deleted as i64,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -796,7 +929,7 @@ impl Db {
 
     pub fn delete_event(&self, id: i64) -> Result<()> {
         self.conn
-            .execute("DELETE FROM events WHERE id = ?1", params![id])?;
+            .execute("UPDATE events SET deleted = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -951,7 +1084,12 @@ CREATE TABLE IF NOT EXISTS events (
     start_min    INTEGER NOT NULL DEFAULT 0,
     end_min      INTEGER NOT NULL DEFAULT 0,
     emoji        TEXT NOT NULL DEFAULT '',
-    color        INTEGER NOT NULL DEFAULT 0
+    color        INTEGER NOT NULL DEFAULT 0,
+    uid          TEXT NOT NULL DEFAULT '',
+    etag         TEXT NOT NULL DEFAULT '',
+    href         TEXT NOT NULL DEFAULT '',
+    remote       INTEGER NOT NULL DEFAULT 0,
+    deleted      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
@@ -1038,6 +1176,11 @@ mod tests {
             end_min: 9 * 60,
             emoji: "🌿".into(),
             color: 2,
+            uid: String::new(),
+            etag: String::new(),
+            href: String::new(),
+            remote: false,
+            deleted: false,
         })
         .unwrap();
 

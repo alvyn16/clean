@@ -30,8 +30,11 @@ account setup.
   picker or paste a path). Sent copies and drafts include the same files.
 - Inline reply/compose with To/Cc/Bcc, reply-all that excludes your own address,
   autosaved and resumable drafts, and files attached from the picker or a path.
-- Local calendar events with a New Event sheet and one-click "add to calendar" from a
-  detected date in a message.
+- Calendar with a New Event sheet and one-click "add to calendar" from a detected
+  date in a message. Optional two-way CalDAV sync: configure URL, username and
+  app password under Settings → Calendar. Events added or deleted locally are
+  pushed to the server, remote changes are pulled, and ETags are used for safe
+  updates. A background sync runs every 5 minutes (configurable).
 - Custom-drawn window chrome, spring animations and keyboard navigation
   (`J`/`K`, `Enter`, `Esc`, `Tab`, `Ctrl K`, `Ctrl N`, `Ctrl R`, `Ctrl Enter` to send,
   `Ctrl ,`).
@@ -111,6 +114,7 @@ clean auth proton        # requires Proton Mail Bridge
 clean sync
 clean search "weekend"
 clean folders
+clean calendar-sync       # sync local events with the configured CalDAV calendar
 clean ui                 # launch the window explicitly
 ```
 
@@ -126,7 +130,8 @@ Without an account, `clean` opens with demo mail so the full UI can be explored.
 
 ## Data locations
 
-- Config: `~/.config/clean/config.toml`
+- Config: `~/.config/clean/config.toml` (CalDAV URL/username live here; the password
+  is in the keyring)
 - Cache + calendar: `~/.local/share/clean/clean.db`
 - State: `~/.local/state/clean`
 - Secrets: your desktop keyring (Secret Service)

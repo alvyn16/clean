@@ -282,6 +282,7 @@ fn actions(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                 .on_click(cx.listener(|this, _, _, cx| {
                     if this.model.add_event() {
                         this.toast("Event added to your calendar", cx);
+                        this.sync_calendar(cx);
                     } else {
                         this.toast("Add a title first", cx);
                     }
