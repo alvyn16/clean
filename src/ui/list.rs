@@ -311,6 +311,24 @@ fn message_row(
                         .when(message.row.has_attachments, |this| {
                             this.child(icon(IconName::Paperclip, 11.0, p.faint))
                         })
+                        .when(app.model.folder == "unified", |this| {
+                            this.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px(px(5.0))
+                                    .py(px(1.0))
+                                    .rounded(px(4.0))
+                                    .bg(p.accent.with_alpha(0.12).gpui())
+                                    .text_size(px(9.0))
+                                    .text_color(p.accent.gpui())
+                                    .child(
+                                        app.model
+                                            .account_for(&message.row.account_id)
+                                            .map(|account| account.email.split('@').next().unwrap_or("?").to_string())
+                                            .unwrap_or_else(|| "?".into()),
+                                    ),
+                            )
+                        })
                         .child(
                             div()
                                 .flex_shrink_0()

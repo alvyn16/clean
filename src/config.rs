@@ -12,6 +12,9 @@ pub struct Config {
     pub onboarding: Onboarding,
     pub google: GoogleConfig,
     pub calendar: CalendarConfig,
+    /// Merge the inboxes of every account into one view. Off by default.
+    #[serde(default)]
+    pub unified_inbox: bool,
     pub accounts: Vec<AccountConfig>,
 }
 
@@ -23,6 +26,7 @@ impl Default for Config {
             onboarding: Onboarding::default(),
             google: GoogleConfig::default(),
             calendar: CalendarConfig::default(),
+            unified_inbox: false,
             accounts: Vec::new(),
         }
     }
@@ -352,4 +356,23 @@ pub fn state_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local/state"))
         .join("clean")
+}
+
+#[cfg(test)]
+mod unified_tests {
+    use super::*;
+
+    #[test]
+    fn unified_inbox_is_off_by_default() {
+        assert!(!Config::default().unified_inbox);
+    }
+
+    #[test]
+    fn unified_inbox_round_trips_in_toml() {
+        let mut config = Config::default();
+        config.unified_inbox = true;
+        let raw = toml::to_string(&config).unwrap();
+        let parsed: Config = toml::from_str(&raw).unwrap();
+        assert!(parsed.unified_inbox);
+    }
 }

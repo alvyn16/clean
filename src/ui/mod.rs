@@ -974,6 +974,26 @@ impl CleanApp {
         self.select_message(next, cx);
     }
 
+    /// Account that should handle an operation on the selected message. In the
+    /// unified inbox this can differ from the active account.
+    fn account_for_current(&self) -> Option<crate::config::AccountConfig> {
+        self.model
+            .current()
+            .and_then(|message| self.model.account_for_message(message))
+            .cloned()
+            .or_else(|| self.model.account().cloned())
+    }
+
+    /// Account a draft belongs to, falling back to the active account.
+    fn draft_account(&self) -> Option<crate::config::AccountConfig> {
+        self.model
+            .draft_account_id
+            .as_ref()
+            .and_then(|id| self.model.config.account(id))
+            .cloned()
+            .or_else(|| self.model.account().cloned())
+    }
+
     /// Open a message: update selection, mark it read and fetch a missing body.
     fn select_message(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(draft_id) = self.model.messages.get(index).and_then(|m| m.draft_id) {
@@ -1038,7 +1058,7 @@ impl CleanApp {
         }
 
         let config = self.model.config.clone();
-        let Some(account) = self.model.account().cloned() else {
+        let Some(account) = self.account_for_current() else {
             self.fetching.remove(&id);
             return;
         };
@@ -1114,15 +1134,27 @@ impl CleanApp {
         })
         .detach();
 
-        let account = self.model.account().cloned();
         let config = self.model.config.clone();
+        let accounts: Vec<crate::config::AccountConfig> = if config.unified_inbox {
+            config.accounts.clone()
+        } else {
+            self.model.account().cloned().into_iter().collect()
+        };
         let server_query = query.clone();
         let server = cx.background_executor().spawn(async move {
-            let Some(account) = account else {
-                return Ok(Vec::new());
-            };
             let db = crate::db::Db::open_default()?;
-            crate::mail::sync::search_mail(&config, &db, &account, &server_query, 200)
+            let mut rows = Vec::new();
+            for account in &accounts {
+                if let Ok(found) =
+                    crate::mail::sync::search_mail(&config, &db, account, &server_query, 200)
+                {
+                    rows.extend(found);
+                }
+            }
+            rows.sort_by(|a, b| b.date.cmp(&a.date));
+            rows.dedup_by(|a, b| a.id == b.id);
+            rows.truncate(200);
+            Ok::<Vec<crate::db::MessageRow>, anyhow::Error>(rows)
         });
 
         cx.spawn(async move |this, cx| {
@@ -1277,6 +1309,21 @@ impl CleanApp {
             MailView::Mail => MailView::Calendar,
             MailView::Calendar => MailView::Mail,
         };
+        cx.notify();
+    }
+
+    /// Toggle the optional merged All Inboxes view.
+    fn toggle_unified_inbox(&mut self, cx: &mut Context<Self>) {
+        let enabled = !self.model.config.unified_inbox;
+        self.model.config.unified_inbox = enabled;
+        if !enabled && self.model.folder == "unified" {
+            self.model.folder = "inbox".into();
+        }
+        if let Err(error) = self.model.config.save() {
+            self.toast(format!("Could not save setting: {error:#}"), cx);
+            return;
+        }
+        self.reload_mail(cx);
         cx.notify();
     }
 
@@ -1803,6 +1850,7 @@ impl CleanApp {
 
         let sender = format!("{} <{}>", message.sender(), message.row.from_addr);
         self.model.draft_to = sender;
+        self.model.draft_account_id = Some(message.row.account_id.clone());
         self.model.draft_cc.clear();
         self.model.draft_bcc.clear();
 
@@ -1834,6 +1882,7 @@ impl CleanApp {
             return;
         };
         self.stash_draft(cx);
+        self.model.draft_account_id = Some(message.row.account_id.clone());
         self.model.draft_subject =
             if message.row.subject.to_ascii_lowercase().starts_with("fwd:") {
                 message.row.subject.clone()
@@ -1855,7 +1904,7 @@ impl CleanApp {
         if !self.draft_has_content() || self.model.demo {
             return self.model.draft_id;
         }
-        let account_id = self.model.account().map(|account| account.id.clone())?;
+        let account_id = self.draft_account().map(|account| account.id.clone())?;
         if self.model.draft_message_id.is_none() {
             self.model.draft_message_id = Some(new_message_id(&account_id));
         }
@@ -1964,7 +2013,7 @@ impl CleanApp {
             self.draft_upload_pending = true;
             return;
         }
-        let Some(account) = self.model.account().cloned() else {
+        let Some(account) = self.draft_account() else {
             return;
         };
         let config = self.model.config.clone();
@@ -2030,7 +2079,7 @@ impl CleanApp {
                     // The draft was sent or discarded while this upload was in
                     // flight, so remove the copy it just created.
                     if let (Some(account), Some(message_id)) =
-                        (this.model.account().cloned(), cleanup_id.clone())
+                        (this.draft_account(), cleanup_id.clone())
                     {
                         let config = this.model.config.clone();
                         cx.background_executor()
@@ -2210,7 +2259,7 @@ impl CleanApp {
             return;
         }
 
-        let Some(account) = self.model.account().cloned() else {
+        let Some(account) = self.draft_account() else {
             self.toast("Connect an account to send mail", cx);
             return;
         };
@@ -2339,7 +2388,7 @@ impl CleanApp {
         let Some(message) = self.model.current().cloned() else {
             return;
         };
-        let Some(account) = self.model.account().cloned() else {
+        let Some(account) = self.account_for_current() else {
             self.toast("Connect an account first", cx);
             return;
         };

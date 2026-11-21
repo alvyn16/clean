@@ -103,6 +103,31 @@ pub fn sidebar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                         .pb(px(6.0))
                         .child(section_label("MAIL", p.faint)),
                 )
+                .when(
+                    model.config.unified_inbox && model.config.accounts.len() > 1,
+                    |this| {
+                        this.child(
+                            div()
+                                .px(px(8.0))
+                                .pb(px(6.0))
+                                .child(
+                                    nav_row(
+                                        model,
+                                        p,
+                                        "unified",
+                                        "All Inboxes",
+                                        IconName::Inbox,
+                                        model.folder == "unified",
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.select_folder_at("unified".to_string(), cx);
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(div().h(px(1.0)).w_full().bg(p.border.with_alpha(0.4).gpui())),
+                        )
+                    },
+                )
                 .children(NAV.iter().map(|(role, label, icon_name)| {
                     nav_row(model, p, role, label, *icon_name, model.folder == *role).on_click(
                         cx.listener(move |this, _, _, cx| {

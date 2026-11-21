@@ -641,6 +641,46 @@ fn accounts(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                     p.faint,
                 )),
         )
+        .child(section(
+            p,
+            "Unified inbox",
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .h(px(52.0))
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .bg(p.surface.gpui())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .gap(px(2.0))
+                        .child(text(
+                            "All Inboxes",
+                            12.0,
+                            FontWeight::MEDIUM,
+                            p.text,
+                        ))
+                        .child(text(
+                            "Merge the inboxes of every connected account",
+                            10.5,
+                            FontWeight::NORMAL,
+                            p.faint,
+                        )),
+                )
+                .child(
+                    div()
+                        .id("unified-inbox-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_unified_inbox(cx);
+                        }))
+                        .child(switch(p, model.config.unified_inbox)),
+                ),
+        ))
 }
 
 fn notifications(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {

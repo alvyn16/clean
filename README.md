@@ -11,6 +11,8 @@ account setup.
 ## Features
 
 - Three-pane mail layout with an Upcoming calendar rail, modelled on the reference UI.
+- Optional unified inbox: merge every account's incoming mail into one "All Inboxes"
+  view. Disabled by default; enable it under Settings → Accounts.
 - White / Black / Omarchy themes with nine accent colours. Blue is the default and
   follows Omarchy's live blue token; in Omarchy mode the app re-skins itself when the
   desktop theme changes.

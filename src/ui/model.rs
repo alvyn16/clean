@@ -286,6 +286,8 @@ pub struct Model {
     pub draft_body: String,
     /// Identity of the draft being edited, if it has been saved before.
     pub draft_id: Option<i64>,
+    /// Account a reply/forward should be sent from; falls back to active account.
+    pub draft_account_id: Option<String>,
     pub draft_message_id: Option<String>,
     pub draft_in_reply_to: Option<String>,
     pub draft_references: Vec<String>,
@@ -339,6 +341,7 @@ impl Model {
         let calendar_url = config.calendar.url.clone();
         let calendar_user = config.calendar.username.clone();
         let calendar_configured = crate::calendar_sync::is_configured(&config);
+        let initial_folder = if config.unified_inbox { "unified" } else { "inbox" }.to_string();
         let db = Db::open_default().ok();
 
         let today = Local::now().date_naive();
@@ -354,7 +357,7 @@ impl Model {
             },
             setup_step: SetupStep::Appearance,
             view: MailView::Mail,
-            folder: "inbox".into(),
+            folder: initial_folder,
             selected: None,
             messages: Vec::new(),
             folders: Vec::new(),
@@ -383,6 +386,7 @@ impl Model {
             draft_subject: String::new(),
             draft_body: String::new(),
             draft_id: None,
+            draft_account_id: None,
             draft_message_id: None,
             draft_in_reply_to: None,
             draft_references: Vec::new(),
@@ -576,6 +580,28 @@ impl Model {
             .or_else(|| self.config.accounts.first())
     }
 
+    /// Account that owns a cached message (may differ from the active account
+    /// in the unified inbox).
+    pub fn account_for(&self, account_id: &str) -> Option<&AccountConfig> {
+        self.config.accounts.iter().find(|account| account.id == account_id)
+    }
+
+    pub fn account_for_message(&self, message: &UiMessage) -> Option<&AccountConfig> {
+        self.account_for(&message.row.account_id)
+    }
+
+    pub fn unified_unread(&self) -> u32 {
+        let Some(db) = self.db.as_ref() else { return 0 };
+        self.config
+            .accounts
+            .iter()
+            .filter_map(|account| db.folders(&account.id).ok())
+            .flatten()
+            .filter(|folder| folder.role == "inbox")
+            .map(|folder| folder.unread)
+            .sum()
+    }
+
     pub fn set_active_account(&mut self, id: String) {
         self.active_account = Some(id);
         self.reader = ReaderMode::Read;
@@ -631,6 +657,27 @@ impl Model {
                 })
                 .collect();
             self.selected = None;
+            self.sync_note = None;
+            return;
+        }
+
+        if self.folder == "unified" && self.config.unified_inbox {
+            let mut rows = Vec::new();
+            for account in &self.config.accounts {
+                let Ok(folders) = db.folders(&account.id) else { continue };
+                let Some(inbox) = folders.iter().find(|folder| folder.role == "inbox") else {
+                    continue;
+                };
+                if let Ok(mut found) = db.list_messages(&account.id, &inbox.name, 200, 0) {
+                    rows.append(&mut found);
+                }
+            }
+            rows.sort_by(|a, b| b.date.cmp(&a.date));
+            rows.truncate(200);
+            self.demo = false;
+            self.messages = rows.into_iter().map(UiMessage::from_row).collect();
+            self.labels = Vec::new();
+            self.selected = if self.messages.is_empty() { None } else { Some(0) };
             self.sync_note = None;
             return;
         }
@@ -698,6 +745,7 @@ impl Model {
         self.draft_subject.clear();
         self.draft_body.clear();
         self.draft_id = None;
+        self.draft_account_id = None;
         self.draft_message_id = None;
         self.draft_in_reply_to = None;
         self.draft_references.clear();
@@ -720,6 +768,7 @@ impl Model {
         self.draft_subject = draft.subject;
         self.draft_body = draft.body;
         self.draft_id = Some(draft.id);
+        self.draft_account_id = Some(draft.account_id.clone());
         self.draft_message_id = draft.message_id;
         self.draft_in_reply_to = draft.in_reply_to;
         self.draft_references = draft
@@ -911,6 +960,9 @@ impl Model {
         }
         if role == "drafts" {
             return self.draft_count;
+        }
+        if role == "unified" {
+            return self.unified_unread();
         }
         self.folders
             .iter()
