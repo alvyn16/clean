@@ -122,6 +122,16 @@ pub fn parse_full(raw: &[u8]) -> Result<ParsedMessage> {
     })
 }
 
+/// Pull attachment parts out of a raw message without parsing compose fields.
+pub fn parse_attachments(raw: &[u8]) -> Vec<Attachment> {
+    let Ok(parsed) = parse_mail(raw) else {
+        return Vec::new();
+    };
+    let mut attachments = Vec::new();
+    collect_attachments(&parsed, &mut attachments);
+    attachments
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ParsedDraft {
     pub message_id: Option<String>,
@@ -197,10 +207,12 @@ fn collect_attachments(mail: &ParsedMail<'_>, out: &mut Vec<Attachment>) {
 
     if is_attachment {
         if let Some(filename) = filename {
+            let data = mail.get_body_raw().unwrap_or_default();
             out.push(Attachment {
+                size: data.len(),
                 filename,
                 mime: mail.ctype.mimetype.clone(),
-                size: mail.get_body_raw().map(|body| body.len()).unwrap_or(0),
+                data,
             });
         }
     }
@@ -291,5 +303,41 @@ mod draft_parse_tests {
         assert_eq!(draft.subject, "Lunch?");
         assert!(draft.body.contains("free at noon"));
         assert_eq!(draft.in_reply_to.as_deref(), Some("parent@example.com"));
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_binary_attachments() {
+        // "hi" in base64.
+        let raw = concat!(
+            "From: Me <me@example.com>\r\n",
+            "Subject: file\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n",
+            "\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "see attached\r\n",
+            "--b\r\n",
+            "Content-Type: application/octet-stream\r\n",
+            "Content-Disposition: attachment; filename=\"note.txt\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "\r\n",
+            "aGk=\r\n",
+            "--b--\r\n"
+        )
+        .as_bytes();
+        let parsed = parse_full(raw).unwrap();
+        assert!(parsed.has_attachments);
+        assert_eq!(parsed.attachments.len(), 1);
+        assert_eq!(parsed.attachments[0].filename, "note.txt");
+        assert_eq!(parsed.attachments[0].data, b"hi");
+        assert_eq!(parsed.attachments[0].size, 2);
+        assert_eq!(parse_attachments(raw).len(), 1);
     }
 }

@@ -134,13 +134,8 @@ fn sync_folder(
                 if let Ok(raw) = session.fetch_body(&folder.name, header.uid) {
                     if let Ok(parsed) = parse::parse_full(&raw) {
                         row.id = msg_id;
-                        row.snippet = parsed.snippet;
-                        db.set_body(
-                            msg_id,
-                            Some(&parsed.body_text),
-                            parsed.body_html.as_deref(),
-                        )
-                        .ok();
+                        row.snippet = parsed.snippet.clone();
+                        store_parsed(db, msg_id, &parsed);
                     }
                 }
             }
@@ -214,7 +209,7 @@ fn sync_drafts(
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0)
         };
-        db.upsert_draft(&DraftRow {
+        if let Ok(draft_id) = db.upsert_draft(&DraftRow {
             id: 0,
             account_id: account.id.clone(),
             message_id: Some(message_id),
@@ -227,9 +222,17 @@ fn sync_drafts(
             references: draft.references.join(" "),
             updated_at,
             remote: true,
-        })
-        .ok();
-        fetched += 1;
+        }) {
+            let parsed = parse::parse_attachments(&raw);
+            if !parsed.is_empty() {
+                if let Ok(items) =
+                    crate::mail::attachments::save_draft_attachments(draft_id, &parsed)
+                {
+                    let _ = db.set_draft_attachments(draft_id, &items);
+                }
+            }
+            fetched += 1;
+        }
     }
 
     match db.prune_remote_drafts(&account.id, &present) {
@@ -241,6 +244,24 @@ fn sync_drafts(
     }
 
     Ok(fetched)
+}
+
+/// Cache a parsed body together with its attachments. Both the sync prefetch
+/// and the on-demand fetch go through here so attachments never get lost.
+fn store_parsed(db: &Db, id: i64, parsed: &crate::mail::ParsedMessage) {
+    let _ = db.set_body(id, Some(&parsed.body_text), parsed.body_html.as_deref());
+    let _ = db.set_has_attachments(id, !parsed.attachments.is_empty());
+    if parsed.attachments.is_empty() {
+        return;
+    }
+    match crate::mail::attachments::save_message_attachments(id, &parsed.attachments) {
+        Ok(items) => {
+            if let Err(error) = db.set_message_attachments(id, &items) {
+                warn!("could not index attachments: {error:#}");
+            }
+        }
+        Err(error) => warn!("could not store attachments: {error:#}"),
+    }
 }
 
 /// Fetch and cache one message body.
@@ -258,13 +279,15 @@ pub fn fetch_body(
     let _ = session.mark_seen(folder, uid);
     session.logout();
 
+    let body_text = parsed.body_text.clone();
+    let body_html = parsed.body_html.clone();
     if let Ok(Some(row)) = db.find_by_uid(&account.id, folder, uid) {
-        let _ = db.set_body(row.id, Some(&parsed.body_text), parsed.body_html.as_deref());
+        store_parsed(db, row.id, &parsed);
         if !row.flags.contains("\\Seen") {
             let flags = format!("{} \\Seen", row.flags).trim().to_string();
             let _ = db.set_flags(row.id, &flags);
         }
     }
 
-    Ok((parsed.body_text, parsed.body_html))
+    Ok((body_text, body_html))
 }

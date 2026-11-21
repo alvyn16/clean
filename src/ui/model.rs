@@ -50,6 +50,7 @@ pub enum Field {
     DraftTo,
     DraftSubject,
     DraftBody,
+    AttachmentPath,
     EventTitle,
     EventDate,
     EventStart,
@@ -274,6 +275,8 @@ pub struct Model {
     pub draft_message_id: Option<String>,
     pub draft_in_reply_to: Option<String>,
     pub draft_references: Vec<String>,
+    /// Path typed into the composer's fallback attachment field.
+    pub attachment_path: String,
     pub draft_saved_at: Option<std::time::Instant>,
     /// Number of drafts for the active account, shown in the sidebar.
     pub draft_count: u32,
@@ -356,6 +359,7 @@ impl Model {
             draft_message_id: None,
             draft_in_reply_to: None,
             draft_references: Vec::new(),
+            attachment_path: String::new(),
             draft_saved_at: None,
             draft_count: 0,
             sign_in: SignInState::default(),

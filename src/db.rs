@@ -57,7 +57,26 @@ pub struct DraftRow {
     pub remote: bool,
 }
 
+/// An attachment decoded from a message and cached on disk.
 #[derive(Debug, Clone)]
+pub struct AttachmentRow {
+    pub id: i64,
+    pub message_id: i64,
+    pub filename: String,
+    pub mime: String,
+    pub size: usize,
+    pub path: String,
+}
+
+/// A local file attached to a draft being composed.
+#[derive(Debug, Clone)]
+pub struct DraftAttachmentRow {
+    pub filename: String,
+    pub mime: String,
+    pub size: usize,
+    pub path: String,
+}
+
 pub struct EventRow {
     pub id: i64,
     pub title: String,
@@ -261,6 +280,80 @@ impl Db {
             params![id, text, html],
         )?;
         Ok(())
+    }
+
+    pub fn set_has_attachments(&self, id: i64, value: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET has_attachments = ?2 WHERE id = ?1",
+            params![id, value as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Replace the cached attachment metadata for a message.
+    pub fn set_message_attachments(&self, message_id: i64, items: &[AttachmentRow]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM attachments WHERE message_id = ?1", params![message_id])?;
+        for item in items {
+            tx.execute(
+                "INSERT INTO attachments(message_id, filename, mime, size, path)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(message_id, filename) DO UPDATE SET
+                    mime = excluded.mime, size = excluded.size, path = excluded.path",
+                params![message_id, item.filename, item.mime, item.size as i64, item.path],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn attachments_for(&self, message_id: i64) -> Result<Vec<AttachmentRow>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, message_id, filename, mime, size, path
+             FROM attachments WHERE message_id = ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![message_id], |row| {
+            Ok(AttachmentRow {
+                id: row.get(0)?,
+                message_id: row.get(1)?,
+                filename: row.get(2)?,
+                mime: row.get(3)?,
+                size: row.get::<_, i64>(4)? as usize,
+                path: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Replace the queued files for a draft.
+    pub fn set_draft_attachments(&self, draft_id: i64, items: &[DraftAttachmentRow]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM draft_attachments WHERE draft_id = ?1", params![draft_id])?;
+        for item in items {
+            tx.execute(
+                "INSERT INTO draft_attachments(draft_id, filename, mime, size, path)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![draft_id, item.filename, item.mime, item.size as i64, item.path],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn draft_attachments(&self, draft_id: i64) -> Result<Vec<DraftAttachmentRow>> {
+        let mut statement = self.conn.prepare(
+            "SELECT filename, mime, size, path FROM draft_attachments
+             WHERE draft_id = ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![draft_id], |row| {
+            Ok(DraftAttachmentRow {
+                filename: row.get(0)?,
+                mime: row.get(1)?,
+                size: row.get::<_, i64>(2)? as usize,
+                path: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn set_flags(&self, id: i64, flags: &str) -> Result<()> {
@@ -479,6 +572,7 @@ impl Db {
     }
 
     pub fn delete_draft(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM draft_attachments WHERE draft_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM drafts WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -767,6 +861,29 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE INDEX IF NOT EXISTS idx_drafts_account_updated
     ON drafts(account_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS attachments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id  INTEGER NOT NULL,
+    filename    TEXT NOT NULL,
+    mime        TEXT NOT NULL DEFAULT 'application/octet-stream',
+    size        INTEGER NOT NULL DEFAULT 0,
+    path        TEXT NOT NULL,
+    UNIQUE(message_id, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message
+    ON attachments(message_id);
+
+CREATE TABLE IF NOT EXISTS draft_attachments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id    INTEGER NOT NULL,
+    filename    TEXT NOT NULL,
+    mime        TEXT NOT NULL DEFAULT 'application/octet-stream',
+    size        INTEGER NOT NULL DEFAULT 0,
+    path        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_draft_attachments_draft
+    ON draft_attachments(draft_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     subject,
     from_name,
@@ -1019,5 +1136,36 @@ mod draft_tests {
         assert!(db.draft(local).unwrap().is_some());
         assert_eq!(db.prune_remote_drafts("a", &[]).unwrap(), 1);
         assert!(db.draft(local).unwrap().is_none());
+    }
+
+    #[test]
+    fn stores_draft_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).unwrap();
+        let id = db.upsert_draft(&DraftRow {
+            id: 0,
+            account_id: "a".into(),
+            message_id: Some("m@clean.local".into()),
+            to_addrs: "to@example.com".into(),
+            cc_addrs: String::new(),
+            bcc_addrs: String::new(),
+            subject: "with file".into(),
+            body: "body".into(),
+            in_reply_to: None,
+            references: String::new(),
+            updated_at: 1,
+            remote: false,
+        }).unwrap();
+        db.set_draft_attachments(id, &[DraftAttachmentRow {
+            filename: "note.txt".into(),
+            mime: "text/plain".into(),
+            size: 4,
+            path: "/tmp/note.txt".into(),
+        }]).unwrap();
+        let rows = db.draft_attachments(id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].filename, "note.txt");
+        db.delete_draft(id).unwrap();
+        assert!(db.draft_attachments(id).unwrap().is_empty());
     }
 }

@@ -82,6 +82,10 @@ pub struct CleanApp {
     pub draft_upload_pending: bool,
     /// Bumped when a draft is sent or discarded so late uploads can clean up.
     pub draft_upload_epoch: u64,
+    /// Attachments decoded from the currently open message.
+    pub attachments: Vec<crate::db::AttachmentRow>,
+    /// Files queued in the composer.
+    pub compose_attachments: Vec<crate::mail::OutgoingAttachment>,
 }
 
 impl CleanApp {
@@ -118,6 +122,8 @@ impl CleanApp {
             draft_uploading: false,
             draft_upload_pending: false,
             draft_upload_epoch: 0,
+            attachments: Vec::new(),
+            compose_attachments: Vec::new(),
         };
         app.watch_omarchy_theme(cx);
         app.load_avatars(cx);
@@ -131,6 +137,7 @@ impl CleanApp {
             .get(app.model.selected.unwrap_or(0))
             .and_then(|m| m.row.body_html.clone());
         if let Some(id) = initial_id {
+            app.refresh_attachments(id, cx);
             app.load_email_images(id, initial_html.as_deref(), cx);
             app.load_rendered_email(id, initial_html.as_deref(), cx);
             if let Some(html) = initial_html.clone() {
@@ -279,6 +286,99 @@ impl CleanApp {
             }
         })
         .detach();
+    }
+
+    /// Refresh the cached attachment list for the open message.
+    pub fn refresh_attachments(&mut self, message_id: i64, cx: &mut Context<Self>) {
+        self.attachments = self
+            .model
+            .db
+            .as_ref()
+            .and_then(|db| db.attachments_for(message_id).ok())
+            .unwrap_or_default();
+        cx.notify();
+    }
+
+    /// Open a cached attachment with the desktop's default application.
+    pub fn open_attachment(&self, index: usize) {
+        if let Some(item) = self.attachments.get(index) {
+            crate::mail::render::open_in_browser(&item.path);
+        }
+    }
+
+    /// Copy a cached attachment into Downloads and report where it landed.
+    pub fn save_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(item) = self.attachments.get(index) else {
+            return;
+        };
+        match crate::mail::attachments::download(item) {
+            Ok(path) => self.toast(format!("Saved to {}", path.display()), cx),
+            Err(error) => self.toast(format!("Could not save attachment: {error:#}"), cx),
+        }
+    }
+
+    /// Queue local files for the composer and persist them with the draft.
+    pub fn attach_files(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            if !path.is_file() {
+                continue;
+            }
+            let filename = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "attachment".into());
+            if self
+                .compose_attachments
+                .iter()
+                .any(|item| item.path == path)
+            {
+                continue;
+            }
+            let mime = crate::mail::attachments::mime_for_path(&path);
+            let size = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+            self.compose_attachments.push(crate::mail::OutgoingAttachment {
+                filename,
+                mime,
+                size,
+                path,
+            });
+        }
+        if let Some(id) = self.model.draft_id {
+            self.persist_draft_attachments(id);
+        }
+        self.toast(
+            format!("{} attachment(s) added", self.compose_attachments.len()),
+            cx,
+        );
+    }
+
+    fn persist_draft_attachments(&self, draft_id: i64) {
+        let Some(db) = self.model.db.as_ref() else {
+            return;
+        };
+        let rows: Vec<crate::db::DraftAttachmentRow> = self
+            .compose_attachments
+            .iter()
+            .map(|item| crate::db::DraftAttachmentRow {
+                filename: item.filename.clone(),
+                mime: item.mime.clone(),
+                size: item.size,
+                path: item.path.to_string_lossy().into_owned(),
+            })
+            .collect();
+        if let Err(error) = db.set_draft_attachments(draft_id, &rows) {
+            tracing::warn!("could not save draft attachments: {error:#}");
+        }
+    }
+
+    pub fn remove_compose_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.compose_attachments.len() {
+            self.compose_attachments.remove(index);
+            if let Some(id) = self.model.draft_id {
+                self.persist_draft_attachments(id);
+            }
+            self.toast("Attachment removed", cx);
+        }
     }
 
     /// Download images found in the current email so the reader can show them.
@@ -689,6 +789,10 @@ impl CleanApp {
                         return;
                     }
                 }
+                "enter" if self.model.focused == Some(Field::DraftBody) => {
+                    self.send_draft(cx);
+                    return;
+                }
                 "," => self.open_settings(cx),
                 "m" => self.toggle_view(cx),
                 _ => return,
@@ -759,7 +863,7 @@ impl CleanApp {
 
         if matches!(
             field,
-            Field::DraftTo | Field::DraftSubject | Field::DraftBody
+            Field::DraftTo | Field::DraftSubject | Field::DraftBody | Field::AttachmentPath
         ) {
             self.schedule_draft_save(cx);
         }
@@ -774,6 +878,7 @@ impl CleanApp {
             Field::DraftTo => &mut self.model.draft_to,
             Field::DraftSubject => &mut self.model.draft_subject,
             Field::DraftBody => &mut self.model.draft_body,
+            Field::AttachmentPath => &mut self.model.attachment_path,
             Field::EventTitle => &mut self.model.event_draft.title,
             Field::EventDate => &mut self.model.event_draft.day,
             Field::EventStart => &mut self.model.event_draft.start,
@@ -791,7 +896,8 @@ impl CleanApp {
             Field::EventDate => Some(Field::EventStart),
             Field::EventStart => Some(Field::EventEnd),
             Field::EventEnd => Some(Field::EventTitle),
-            Field::Search | Field::DraftBody => None,
+            Field::Search | Field::AttachmentPath => None,
+            Field::DraftBody => Some(Field::AttachmentPath),
         };
     }
 
@@ -806,6 +912,16 @@ impl CleanApp {
             }
             Field::DraftBody => {
                 self.send_draft(cx);
+            }
+            Field::AttachmentPath => {
+                let path = std::path::PathBuf::from(self.model.attachment_path.trim());
+                self.model.attachment_path.clear();
+                if path.exists() {
+                    self.attach_files(vec![path], cx);
+                } else {
+                    self.toast("File not found", cx);
+                }
+                self.model.focused = Some(Field::DraftBody);
             }
             Field::Search => {
                 self.model.focused = None;
@@ -843,6 +959,9 @@ impl CleanApp {
         }
         self.model.select_message(index);
         self.model.mark_seen(index);
+        if let Some(id) = self.model.current().map(|m| m.row.id) {
+            self.refresh_attachments(id, cx);
+        }
         if self.live_view_message.is_some() {
             self.live_load_gen = self.live_load_gen.wrapping_add(1);
             if let Some(old) = &self.live_capture_path {
@@ -922,6 +1041,7 @@ impl CleanApp {
                         {
                             this.model.set_body(position, text, html);
                         }
+                        this.refresh_attachments(id, cx);
                         cx.notify();
                     }
                     Err(error) => this.toast(format!("Could not load message: {error:#}"), cx),
@@ -966,6 +1086,9 @@ impl CleanApp {
     /// Reload the message list and refresh sender avatars for the new messages.
     fn reload_mail(&mut self, cx: &mut Context<Self>) {
         self.model.reload();
+        if let Some(id) = self.model.current().map(|m| m.row.id) {
+            self.refresh_attachments(id, cx);
+        }
         self.load_sender_avatars(cx);
     }
 
@@ -983,16 +1106,15 @@ impl CleanApp {
     /// Save the active draft before leaving the composer for another view.
     fn stash_draft(&mut self, cx: &mut Context<Self>) {
         if matches!(self.model.reader, ReaderMode::Compose | ReaderMode::Reply) {
-            if self.model.draft_is_empty() {
-                if self.model.draft_id.is_some() {
-                    self.discard_draft(cx);
-                    return;
-                }
-            } else {
+            if self.draft_has_content() {
                 self.flush_draft(cx);
+            } else if self.model.draft_id.is_some() {
+                self.discard_draft(cx);
+                return;
             }
         }
         self.model.reset_draft();
+        self.compose_attachments.clear();
         self.draft_last_saved_sig = None;
     }
 
@@ -1452,6 +1574,10 @@ impl CleanApp {
 
     // ---- composer drafts -------------------------------------------------
 
+    fn draft_has_content(&self) -> bool {
+        !self.model.draft_is_empty() || !self.compose_attachments.is_empty()
+    }
+
     /// Begin a brand-new message.
     pub fn begin_compose(&mut self, cx: &mut Context<Self>) {
         self.stash_draft(cx);
@@ -1526,7 +1652,7 @@ impl CleanApp {
 
     /// Save the active draft to the local cache. Returns the draft row id.
     fn save_draft_local(&mut self) -> Option<i64> {
-        if self.model.draft_is_empty() || self.model.demo {
+        if !self.draft_has_content() || self.model.demo {
             return self.model.draft_id;
         }
         let account_id = self.model.account().map(|account| account.id.clone())?;
@@ -1552,6 +1678,7 @@ impl CleanApp {
         match result {
             Some(Ok(id)) => {
                 self.model.draft_id = Some(id);
+                self.persist_draft_attachments(id);
                 self.model.draft_saved_at = Some(std::time::Instant::now());
                 if was_new {
                     self.model.draft_count = self.model.draft_count.saturating_add(1);
@@ -1567,13 +1694,19 @@ impl CleanApp {
     }
 
     fn draft_signature(&self) -> String {
+        let files: Vec<String> = self
+            .compose_attachments
+            .iter()
+            .map(|item| item.path.to_string_lossy().into_owned())
+            .collect();
         format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             self.model.draft_to,
             self.model.draft_subject,
             self.model.draft_body,
             self.model.draft_in_reply_to.clone().unwrap_or_default(),
-            self.model.draft_references.join(" ")
+            self.model.draft_references.join(" "),
+            files.join(";")
         )
     }
 
@@ -1606,7 +1739,7 @@ impl CleanApp {
     /// Persist the draft locally and mirror it into the IMAP Drafts folder.
     pub fn flush_draft(&mut self, cx: &mut Context<Self>) {
         if self.model.demo
-            || self.model.draft_is_empty()
+            || !self.draft_has_content()
             || !matches!(self.model.reader, ReaderMode::Compose | ReaderMode::Reply)
         {
             return;
@@ -1650,6 +1783,7 @@ impl CleanApp {
             in_reply_to: self.model.draft_in_reply_to.clone(),
             references: self.model.draft_references.clone(),
             message_id: message_id.clone(),
+            attachments: self.compose_attachments.clone(),
         };
         self.draft_uploading = true;
         let epoch = self.draft_upload_epoch;
@@ -1755,7 +1889,7 @@ impl CleanApp {
     pub fn close_composer(&mut self, cx: &mut Context<Self>) {
         let was_composing = matches!(self.model.reader, ReaderMode::Compose | ReaderMode::Reply);
         if was_composing {
-            if self.model.draft_is_empty() {
+            if !self.draft_has_content() {
                 // Clearing a draft and closing it throws the draft away.
                 if self.model.draft_id.is_some() {
                     self.discard_draft(cx);
@@ -1769,6 +1903,7 @@ impl CleanApp {
         self.model.reader = ReaderMode::Read;
         self.model.focused = None;
         self.model.reset_draft();
+        self.compose_attachments.clear();
         if self.model.folder == "drafts" {
             self.reload_mail(cx);
         }
@@ -1792,6 +1927,7 @@ impl CleanApp {
             self.model.draft_count = self.model.draft_count.saturating_sub(1);
         }
         self.model.reset_draft();
+        self.compose_attachments.clear();
         self.model.reader = ReaderMode::Read;
         self.model.focused = None;
         self.draft_last_saved_sig = None;
@@ -1841,6 +1977,20 @@ impl CleanApp {
             return;
         };
         let reply = row.in_reply_to.is_some();
+        self.compose_attachments = self
+            .model
+            .db
+            .as_ref()
+            .and_then(|db| db.draft_attachments(id).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| crate::mail::OutgoingAttachment {
+                filename: item.filename,
+                mime: item.mime,
+                size: item.size,
+                path: std::path::PathBuf::from(item.path),
+            })
+            .collect();
         self.model.adopt_draft(row);
         self.model.reader = if reply {
             ReaderMode::Reply
@@ -1884,6 +2034,7 @@ impl CleanApp {
             in_reply_to: self.model.draft_in_reply_to.clone(),
             references: self.model.draft_references.clone(),
             message_id: message_id.clone(),
+            attachments: self.compose_attachments.clone(),
         };
         let from = crate::mail::MailAddress {
             name: account.display_name.clone(),
@@ -1950,6 +2101,7 @@ impl CleanApp {
                             this.model.draft_count = this.model.draft_count.saturating_sub(1);
                         }
                         this.model.reset_draft();
+                        this.compose_attachments.clear();
                         this.draft_last_saved_sig = None;
                         this.draft_save_gen = this.draft_save_gen.wrapping_add(1);
                         if this.model.folder == "drafts" {

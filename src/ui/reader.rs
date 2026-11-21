@@ -197,6 +197,9 @@ fn reading(
                         .when(event_suggestion(message), |this| {
                             this.child(calendar_suggestion(p, message, cx))
                         })
+                        .when(!app.attachments.is_empty(), |this| {
+                            this.child(attachment_strip(app, cx))
+                        })
                         .child(render_body(app, message, cx)),
                 ),
         )
@@ -258,6 +261,85 @@ fn reading(
                     )),
                 ),
         )
+}
+
+fn attachment_strip(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
+    let p = &app.model.palette;
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap(px(6.0))
+        .px(px(20.0))
+        .py(px(10.0))
+        .border_b(px(1.0))
+        .border_color(p.border.with_alpha(0.45).gpui())
+        .child(text(
+            format!(
+                "{} attachment{}",
+                app.attachments.len(),
+                if app.attachments.len() == 1 { "" } else { "s" }
+            ),
+            10.5,
+            FontWeight::SEMIBOLD,
+            p.muted,
+        ))
+        .children(app.attachments.iter().enumerate().map(|(index, item)| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .h(px(30.0))
+                .px(px(10.0))
+                .rounded(px(7.0))
+                .bg(p.inset.gpui())
+                .child(icon(IconName::Paperclip, 13.0, p.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(text(item.filename.clone(), 11.5, FontWeight::MEDIUM, p.text)),
+                )
+                .child(text(
+                    crate::mail::attachments::human_size(item.size),
+                    10.0,
+                    FontWeight::NORMAL,
+                    p.faint,
+                ))
+                .child(
+                    div()
+                        .id(("attachment-open", index))
+                        .flex()
+                        .items_center()
+                        .h(px(22.0))
+                        .px(px(8.0))
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(p.hover.gpui()))
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.open_attachment(index);
+                        }))
+                        .child(text("Open", 10.5, FontWeight::MEDIUM, p.accent)),
+                )
+                .child(
+                    div()
+                        .id(("attachment-save", index))
+                        .flex()
+                        .items_center()
+                        .h(px(22.0))
+                        .px(px(8.0))
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(p.hover.gpui()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.save_attachment(index, cx);
+                        }))
+                        .child(text("Save", 10.5, FontWeight::MEDIUM, p.accent)),
+                )
+        }))
 }
 
 fn toolbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {

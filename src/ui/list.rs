@@ -306,6 +306,9 @@ fn message_row(
                                 .text_color(p.text.gpui())
                                 .child(message.sender().to_string()),
                         )
+                        .when(message.row.has_attachments, |this| {
+                            this.child(icon(IconName::Paperclip, 11.0, p.faint))
+                        })
                         .child(
                             div()
                                 .flex_shrink_0()

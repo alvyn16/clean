@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use lettre::message::{header::ContentType, Mailbox, MultiPart, SinglePart};
+use lettre::message::{header::ContentType, Attachment as MailAttachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{Message, SmtpTransport, Transport};
 use std::time::Duration;
@@ -57,16 +57,30 @@ fn build_message(from: &MailAddress, draft: &Draft) -> Result<Message> {
         .header(ContentType::TEXT_PLAIN)
         .body(draft.body_text.clone());
 
-    let message = if draft.body_html.as_deref().is_some_and(|html| !html.is_empty()) {
-        builder.multipart(MultiPart::alternative_plain_html(
+    let body = if draft.body_html.as_deref().is_some_and(|html| !html.is_empty()) {
+        MultiPart::alternative_plain_html(
             draft.body_text.clone(),
             draft.body_html.clone().unwrap_or_default(),
-        ))?
+        )
     } else {
-        builder.singlepart(text)?
+        MultiPart::mixed().singlepart(text)
     };
 
-    Ok(message)
+    // Wrap the body in a mixed part and add one part per attachment so the
+    // same bytes are sent, saved to Sent, and uploaded as a draft.
+    let mut mixed = MultiPart::mixed().multipart(body);
+    for attachment in &draft.attachments {
+        let bytes = std::fs::read(&attachment.path).with_context(|| {
+            format!("reading attachment {}", attachment.path.display())
+        })?;
+        let content_type = ContentType::parse(&attachment.mime)
+            .unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("valid MIME"));
+        mixed = mixed.singlepart(
+            MailAttachment::new(attachment.filename.clone()).body(bytes, content_type),
+        );
+    }
+
+    Ok(builder.multipart(mixed)?)
 }
 
 /// Build the raw RFC822 message bytes for a draft. Used by `send` and by the
@@ -141,3 +155,76 @@ mod tests {
 
 }
 
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn builds_message_with_attachment() {
+        let dir = std::env::temp_dir().join(format!("clean-attach-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hello.txt");
+        std::fs::write(&path, b"hello attachment").unwrap();
+
+        let from = MailAddress { name: "Me".into(), email: "me@example.com".into() };
+        let draft = Draft {
+            from: from.clone(),
+            to: vec![MailAddress { name: "You".into(), email: "you@example.com".into() }],
+            subject: "with file".into(),
+            body_text: "body".into(),
+            attachments: vec![crate::mail::OutgoingAttachment {
+                filename: "hello.txt".into(),
+                mime: "text/plain".into(),
+                size: 16,
+                path: path.clone(),
+            }],
+            ..Default::default()
+        };
+        let raw = String::from_utf8_lossy(&build_message_raw(&from, &draft).unwrap()).into_owned();
+        assert!(raw.contains("filename=\"hello.txt\"") || raw.contains("name=\"hello.txt\""));
+        assert!(raw.contains("hello attachment"), "attachment bytes missing: {raw}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_send_attachment_mail() {
+        let config = crate::config::Config::load().unwrap();
+        let account = config.accounts.first().unwrap().clone();
+        let sender = config.accounts.get(1).cloned().unwrap_or_else(|| account.clone());
+        let credential = crate::mail::auth::credential(&sender, &config).unwrap();
+        let secret = match &credential {
+            crate::mail::imap::Credential::Password(v) => v.clone(),
+            crate::mail::imap::Credential::OAuth(v) => v.clone(),
+        };
+        let id = format!("clean-attachment-probe-{}@clean.local", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let path = std::env::temp_dir().join("clean-attachment-probe.txt");
+        std::fs::write(&path, b"attachment probe contents").unwrap();
+        let from = MailAddress { name: sender.display_name.clone(), email: sender.email.clone() };
+        let draft = Draft {
+            from: from.clone(),
+            to: vec![MailAddress { name: account.display_name.clone(), email: account.email.clone() }],
+            subject: "attachment probe".into(),
+            body_text: "This message has a text attachment.".into(),
+            message_id: Some(id.clone()),
+            attachments: vec![crate::mail::OutgoingAttachment {
+                filename: "probe-note.txt".into(),
+                mime: "text/plain".into(),
+                size: 25,
+                path: path.clone(),
+            }],
+            ..Default::default()
+        };
+        crate::mail::smtp::send(&sender, &secret, &draft).expect("send attachment probe");
+        println!("sent attachment probe id={id}");
+        std::thread::sleep(std::time::Duration::from_secs(25));
+        let receiver_credential = crate::mail::auth::credential(&account, &config).unwrap();
+        let mut session = crate::mail::imap::connect(&account, &receiver_credential).unwrap();
+        let removed = session.delete_by_message_id("INBOX", &id).unwrap();
+        session.logout();
+        println!("removed probe: {removed}");
+        assert_eq!(removed, 1);
+    }
+
+}

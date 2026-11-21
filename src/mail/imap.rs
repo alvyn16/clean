@@ -680,6 +680,7 @@ mod idle_tests {
         assert_eq!(removed, 1, "test message was not cleaned up");
     }
 
+
     #[test]
     #[ignore]
     fn idle_on_inbox_accepts_and_terminates_cleanly() {
@@ -692,8 +693,6 @@ mod idle_tests {
             .idle_wait(std::time::Duration::from_secs(8))
             .expect("IDLE");
         println!("IDLE outcome after 8s: {outcome:?}");
-        // A timeout is expected on a quiet mailbox; either result proves the
-        // IDLE command was accepted and DONE was handled without an error.
         session.logout();
     }
 }

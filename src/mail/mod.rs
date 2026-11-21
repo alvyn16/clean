@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod auth;
 pub mod avatars;
 pub mod html;
@@ -49,6 +50,17 @@ pub struct Attachment {
     pub filename: String,
     pub mime: String,
     pub size: usize,
+    /// Decoded file bytes for incoming mail.
+    pub data: Vec<u8>,
+}
+
+/// A local file queued in the composer.
+#[derive(Debug, Clone)]
+pub struct OutgoingAttachment {
+    pub filename: String,
+    pub mime: String,
+    pub size: usize,
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -143,4 +155,6 @@ pub struct Draft {
     /// Deterministic Message-ID. When set, the same id is reused for the draft
     /// stored on the server so a resave can replace it in place.
     pub message_id: Option<String>,
+    /// Local files to include in the message.
+    pub attachments: Vec<OutgoingAttachment>,
 }

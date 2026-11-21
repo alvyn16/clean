@@ -101,7 +101,73 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                     "What's this about?",
                     cx,
                 ))
-                .child(divider(p)),
+                .child(divider(p))
+                .child(field_row(
+                    app,
+                    "compose-attach-path",
+                    Field::AttachmentPath,
+                    "File",
+                    &model.attachment_path,
+                    "Paste a file path and press Enter to attach",
+                    cx,
+                ))
+                .child(divider(p))
+                .when(!app.compose_attachments.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(6.0))
+                            .px(px(18.0))
+                            .py(px(8.0))
+                            .children(
+                                app
+                                    .compose_attachments
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, item)| {
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .h(px(28.0))
+                                            .px(px(9.0))
+                                            .rounded(px(7.0))
+                                            .bg(p.inset.gpui())
+                                            .border_1()
+                                            .border_color(p.border.with_alpha(0.5).gpui())
+                                            .child(icon(IconName::Paperclip, 12.0, p.accent))
+                                            .child(text(
+                                                item.filename.clone(),
+                                                11.0,
+                                                FontWeight::MEDIUM,
+                                                p.text,
+                                            ))
+                                            .child(text(
+                                                crate::mail::attachments::human_size(item.size),
+                                                10.0,
+                                                FontWeight::NORMAL,
+                                                p.faint,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .id(("compose-attachment-remove", index))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .size(px(17.0))
+                                                    .rounded_full()
+                                                    .cursor_pointer()
+                                                    .hover(|style| style.bg(p.hover.gpui()))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.remove_compose_attachment(index, cx);
+                                                    }))
+                                                    .child(icon(IconName::X, 10.0, p.muted)),
+                                            )
+                                    }),
+                            ),
+                    )
+                }),
         )
         .child(
             div()
@@ -171,7 +237,39 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                 .border_t(px(1.0))
                 .border_color(p.border.with_alpha(0.5).gpui())
                 .bg(p.surface.gpui())
-                .child(compose_tool("compose-attach", IconName::Paperclip, p, cx))
+                .child(
+                    icon_button("compose-attach", IconName::Paperclip, p.muted, p.hover, 14.0)
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                                files: true,
+                                directories: false,
+                                multiple: true,
+                                prompt: Some("Attach files".into()),
+                            });
+                            cx.spawn(async move |this, cx| {
+                                match receiver.await {
+                                    Ok(Ok(Some(paths))) => {
+                                        this.update(cx, |this, cx| {
+                                            this.attach_files(paths, cx);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                    }
+                                    Ok(Ok(None)) | Err(_) => {}
+                                    Ok(Err(error)) => {
+                                        this.update(cx, |this, cx| {
+                                            this.toast(
+                                                format!("Could not open file picker: {error:#}"),
+                                                cx,
+                                            );
+                                        })
+                                        .ok();
+                                    }
+                                }
+                            })
+                            .detach();
+                        })),
+                )
                 .child(compose_tool("compose-image", IconName::Image, p, cx))
                 .child(compose_tool("compose-link", IconName::AtSign, p, cx))
                 .child(compose_tool("compose-calendar", IconName::CalendarPlus, p, cx))

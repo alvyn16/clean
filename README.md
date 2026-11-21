@@ -19,11 +19,17 @@ account setup.
   (via Proton Mail Bridge) account support.
 - Local-first: SQLite cache with FTS5 full-text search, credentials in the GNOME/Secret
   Service keyring, no telemetry.
-- IMAP sync with lazy body fetching, mark-as-seen, SMTP send, inline reply/compose.
+- IMAP sync with IDLE for instant new mail, lazy body fetching, mark-as-seen, and
+  real message actions mirrored to the server.
+- Attachments: decode and cache files from incoming mail, open with the desktop
+  default app or save to Downloads, and attach local files when composing (file
+  picker or paste a path). Sent copies and drafts include the same files.
+- Inline reply/compose with autosaved, resumable drafts.
 - Local calendar events with a New Event sheet and one-click "add to calendar" from a
   detected date in a message.
 - Custom-drawn window chrome, spring animations and keyboard navigation
-  (`J`/`K`, `Enter`, `Esc`, `Ctrl K`, `Ctrl N`, `Ctrl R`, `Ctrl ,`).
+  (`J`/`K`, `Enter`, `Esc`, `Tab`, `Ctrl K`, `Ctrl N`, `Ctrl R`, `Ctrl Enter` to send,
+  `Ctrl ,`).
 
 ## Build
 
