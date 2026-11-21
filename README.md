@@ -6,6 +6,18 @@ Built in Rust with [GPUI Kit](https://gpui-kit.com). Three theme modes — **Whi
 **Black**, and **Omarchy** (live desktop palette) — plus a first-run appearance and
 account setup.
 
+## Screenshots
+
+**First-run setup — choose a look:**
+
+![Setup appearance](docs/setup-appearance.png)
+
+**First-run setup — connect a mail account:**
+
+![Setup account](docs/setup-account.png)
+
+**In the app — inbox, reader and calendar rail:**
+
 ![clean — inbox, reader and calendar rail](docs/screenshot.png)
 
 ## Features
