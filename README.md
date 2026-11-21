@@ -37,9 +37,12 @@ account setup.
   app password under Settings → Calendar. Events added or deleted locally are
   pushed to the server, remote changes are pulled, and ETags are used for safe
   updates. A background sync runs every 5 minutes (configurable).
-- Custom-drawn window chrome, spring animations and keyboard navigation
-  (`J`/`K`, `Enter`, `Esc`, `Tab`, `Ctrl K`, `Ctrl N`, `Ctrl R`, `Ctrl Enter` to send,
-  `Ctrl ,`).
+- Custom-drawn window chrome, spring animations and keyboard navigation.
+- Interactive shortcuts editor under Settings → Shortcuts: filter actions, click a
+  keycap and press a new combination to rebind it, reset one or everything. Bindings
+  are saved to config and conflicts with other actions are rejected. Defaults:
+  `J`/`K` navigate, `Enter` opens, `E` archives, `#` deletes, `V` toggles calendar,
+  `Ctrl K` search, `Ctrl N` compose, `Ctrl R` sync, `Ctrl Enter` send, `Esc` closes.
 
 ## Build
 

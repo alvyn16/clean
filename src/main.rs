@@ -6,6 +6,7 @@
 mod calendar_dav;
 mod calendar_sync;
 mod cli;
+mod keys;
 mod config;
 mod db;
 mod mail;

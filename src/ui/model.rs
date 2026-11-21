@@ -60,6 +60,7 @@ pub enum Field {
     CalendarUrl,
     CalendarUser,
     CalendarPassword,
+    ShortcutFilter,
 }
 
 #[derive(Clone, Debug)]
@@ -279,6 +280,10 @@ pub struct Model {
     pub calendar_user: String,
     pub calendar_password: String,
     pub calendar_status: String,
+    /// Filter text in the interactive shortcuts editor.
+    pub shortcut_filter: String,
+    /// Action id currently waiting for a keystroke, if any.
+    pub capturing_binding: Option<String>,
     pub draft_to: String,
     pub draft_cc: String,
     pub draft_bcc: String,
@@ -375,6 +380,8 @@ impl Model {
             calendar_url,
             calendar_user,
             calendar_password: String::new(),
+            shortcut_filter: String::new(),
+            capturing_binding: None,
             calendar_status: if calendar_configured {
                 "CalDAV configured".into()
             } else {
@@ -469,6 +476,41 @@ impl Model {
                 return;
             }
         }
+    }
+
+    pub fn binding(&self, action: &str) -> String {
+        self.config
+            .keybindings
+            .get(action)
+            .cloned()
+            .unwrap_or_else(|| crate::keys::default_for(action).to_string())
+    }
+
+    /// Set a binding, refusing chords already assigned to another action.
+    /// Returns the conflicting action id when rejected.
+    pub fn set_keybinding(&mut self, action: &str, value: &str) -> Option<String> {
+        if let Err(conflict) =
+            crate::keys::apply_binding(&mut self.config.keybindings, action, value)
+        {
+            if conflict == "invalid" {
+                return None;
+            }
+            return Some(conflict);
+        }
+        let _ = self.config.save();
+        None
+    }
+
+    pub fn reset_keybinding(&mut self, action: &str) {
+        self.config
+            .keybindings
+            .insert(action.to_string(), crate::keys::default_for(action).to_string());
+        let _ = self.config.save();
+    }
+
+    pub fn reset_all_keybindings(&mut self) {
+        self.config.keybindings = crate::keys::default_bindings();
+        let _ = self.config.save();
     }
 
     /// Load persisted events; demo events fill the rail when the cache is empty.

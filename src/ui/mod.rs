@@ -717,10 +717,81 @@ impl CleanApp {
         .detach();
     }
 
+    fn binding_matches(
+        &self,
+        action: &str,
+        key: &str,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        super_key: bool,
+    ) -> bool {
+        let value = self.model.binding(action);
+        crate::keys::matches(&value, key, ctrl, alt, shift, super_key)
+    }
+
+    /// Capture mode for the shortcuts editor: take the next keystroke as the
+    /// new binding instead of acting on it.
+    fn capture_binding(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        super_key: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(action) = self.model.capturing_binding.clone() else {
+            return;
+        };
+        self.model.capturing_binding = None;
+        if key == "escape" && !ctrl && !alt && !shift && !super_key {
+            self.toast("Binding cancelled".to_string(), cx);
+            cx.notify();
+            return;
+        }
+        if key == "shift" || key == "control" || key == "alt" || key == "super" {
+            // Modifier-only presses don't make a binding; keep capturing.
+            self.model.capturing_binding = Some(action);
+            return;
+        }
+        let value = crate::keys::encode(key, ctrl, alt, shift, super_key);
+        match self.model.set_keybinding(&action, &value) {
+            None => self.toast(
+                format!("{} → {}", crate::keys::action_label(&action), crate::keys::label(&value)),
+                cx,
+            ),
+            Some(other) => self.toast(
+                format!("Already used by {}", crate::keys::action_label(&other)),
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
-        let command = keystroke.modifiers.control;
+        let ctrl = keystroke.modifiers.control;
+        let alt = keystroke.modifiers.alt;
+        let shift = keystroke.modifiers.shift;
+        let super_key = keystroke.modifiers.platform;
+
+        if self.model.capturing_binding.is_some() {
+            self.capture_binding(key, ctrl, alt, shift, super_key, cx);
+            return;
+        }
+        if self.model.show_settings && ctrl && !alt && !shift && !super_key && key.len() == 1 {
+            if let Some(digit) = key.chars().next().and_then(|c| c.to_digit(10)) {
+                let index = digit as usize;
+                if index > 0 && index <= 6 {
+                    self.settings_tab = index - 1;
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
 
         if key == "escape" {
             if self.model.show_narrow_sidebar {
@@ -750,6 +821,7 @@ impl CleanApp {
             }
             if self.model.show_settings {
                 self.model.show_settings = false;
+                self.model.capturing_binding = None;
             } else if matches!(self.model.reader, ReaderMode::Reply | ReaderMode::Compose) {
                 self.close_composer(cx);
                 return;
@@ -760,73 +832,76 @@ impl CleanApp {
             return;
         }
 
-        if command {
-            match key {
-                "k" => {
-                    self.model.focused = Some(Field::Search);
-                    window.focus(&self.focus, cx);
-                }
-                "n" => {
-                    self.begin_compose(cx);
-                    window.focus(&self.focus, cx);
-                }
-                "r" => self.sync_now(cx),
-                "c" => {
-                    // Ctrl+C copies live email selection; otherwise leave the
-                    // keystroke to a focused text field.
-                    if let Some(text) = self.live_selected_text() {
-                        if !text.is_empty() {
-                            cx.write_to_clipboard(ClipboardItem::new_string(text));
-                            self.toast("Copied selected text", cx);
-                            return;
-                        }
-                    }
-                }
-                "a" => {
-                    // Ctrl+A selects all text in the live email.
-                    if self.live_view.is_some() {
-                        if let Some(view) = self.live_view.clone() {
-                            if let Ok(v) = view.lock() {
-                                let _ = v.select_all();
-                            }
-                        }
-                        self.recapture_live(cx);
+        if ctrl || alt || super_key {
+            if self.binding_matches("compose", key, ctrl, alt, shift, super_key) {
+                self.begin_compose(cx);
+                window.focus(&self.focus, cx);
+                cx.notify();
+                return;
+            }
+            if self.binding_matches("search", key, ctrl, alt, shift, super_key) {
+                self.model.focused = Some(Field::Search);
+                window.focus(&self.focus, cx);
+                cx.notify();
+                return;
+            }
+            if self.binding_matches("settings", key, ctrl, alt, shift, super_key) {
+                self.open_settings(cx);
+                return;
+            }
+            if self.binding_matches("sync", key, ctrl, alt, shift, super_key) {
+                self.sync_now(cx);
+                return;
+            }
+            if self.binding_matches("copy", key, ctrl, alt, shift, super_key) {
+                if let Some(text) = self.live_selected_text() {
+                    if !text.is_empty() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        self.toast("Copied selected text".to_string(), cx);
+                        cx.notify();
                         return;
                     }
                 }
-                "enter" if self.model.focused == Some(Field::DraftBody) => {
-                    self.send_draft(cx);
+            }
+            if self.binding_matches("select_all", key, ctrl, alt, shift, super_key) {
+                if let Some(view) = self.live_view.clone() {
+                    if let Ok(v) = view.lock() {
+                        let _ = v.select_all();
+                    }
+                    self.recapture_live(cx);
+                    cx.notify();
                     return;
                 }
-                "," => self.open_settings(cx),
-                "m" => self.toggle_view(cx),
-                _ => return,
             }
-            cx.notify();
-            return;
+            if self.binding_matches("send", key, ctrl, alt, shift, super_key)
+                && self.model.focused == Some(Field::DraftBody)
+            {
+                self.send_draft(cx);
+                return;
+            }
+            if self.binding_matches("toggle_view", key, ctrl, alt, shift, super_key) {
+                self.toggle_view(cx);
+                return;
+            }
         }
 
         let Some(field) = self.model.focused else {
-            if key == "j" || key == "down" {
+            if self.binding_matches("next", key, ctrl, alt, shift, super_key) {
                 self.step_selection(1, cx);
-            } else if key == "k" || key == "up" {
+            } else if self.binding_matches("previous", key, ctrl, alt, shift, super_key) {
                 self.step_selection(-1, cx);
-            } else if key == "enter" {
+            } else if self.binding_matches("open", key, ctrl, alt, shift, super_key) {
                 if let Some(index) = self.model.selected {
                     self.select_message(index, cx);
                 }
-            } else if key == "v" {
+            } else if self.binding_matches("toggle_view", key, ctrl, alt, shift, super_key) {
                 self.toggle_view(cx);
-            } else if key == "e" {
+            } else if self.binding_matches("archive", key, ctrl, alt, shift, super_key) {
                 self.message_action(MessageAction::Archive, cx);
-            } else if key == "#" || key == "delete" {
+            } else if self.binding_matches("trash", key, ctrl, alt, shift, super_key) {
                 self.message_action(MessageAction::Trash, cx);
-            } else if key == "u" {
-                let unread = self
-                    .model
-                    .current()
-                    .map(|m| m.unread)
-                    .unwrap_or(false);
+            } else if self.binding_matches("mark_unread", key, ctrl, alt, shift, super_key) {
+                let unread = self.model.current().map(|m| m.unread).unwrap_or(false);
                 self.message_action(MessageAction::MarkUnread(!unread), cx);
             }
             return;
@@ -889,6 +964,7 @@ impl CleanApp {
             Field::CalendarUrl => &mut self.model.calendar_url,
             Field::CalendarUser => &mut self.model.calendar_user,
             Field::CalendarPassword => &mut self.model.calendar_password,
+            Field::ShortcutFilter => &mut self.model.shortcut_filter,
             Field::EventTitle => &mut self.model.event_draft.title,
             Field::EventDate => &mut self.model.event_draft.day,
             Field::EventStart => &mut self.model.event_draft.start,
@@ -912,6 +988,7 @@ impl CleanApp {
             Field::CalendarUrl => Some(Field::CalendarUser),
             Field::CalendarUser => Some(Field::CalendarPassword),
             Field::CalendarPassword => Some(Field::CalendarUrl),
+            Field::ShortcutFilter => None,
             Field::DraftBody => Some(Field::AttachmentPath),
         };
     }
@@ -948,6 +1025,10 @@ impl CleanApp {
             }
             Field::CalendarUrl | Field::CalendarUser | Field::CalendarPassword => {
                 self.save_calendar_settings(cx);
+            }
+            Field::ShortcutFilter => {
+                self.model.focused = None;
+                cx.notify();
             }
             field @ (Field::EventTitle
             | Field::EventDate
@@ -1277,6 +1358,7 @@ impl CleanApp {
 
     fn add_account(&mut self, cx: &mut Context<Self>) {
         self.model.show_settings = false;
+        self.model.capturing_binding = None;
         self.model.show_account_menu = false;
         self.model.show_account_manager = true;
         self.model.sign_in.error = None;

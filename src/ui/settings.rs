@@ -210,7 +210,7 @@ fn content(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
             1 => accounts(app, cx).into_any_element(),
             2 => calendar(app, cx).into_any_element(),
             3 => notifications(app, cx).into_any_element(),
-            4 => shortcuts(app).into_any_element(),
+            4 => shortcuts(app, cx).into_any_element(),
             _ => about(app, cx).into_any_element(),
         })
         .child(
@@ -938,57 +938,163 @@ fn calendar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
         )
 }
 
-fn shortcuts(app: &CleanApp) -> impl IntoElement {
+fn shortcuts(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
     let p = &app.model.palette;
-    let rows = [
-        ("Compose", "Ctrl N"),
-        ("Search", "Ctrl K"),
-        ("Settings", "Ctrl ,"),
-        ("Next / previous message", "J  /  K"),
-        ("Open message", "Enter"),
-        ("Archive message", "E"),
-        ("Delete message", "#  or  Del"),
-        ("Mark read / unread", "U"),
-        ("Sync now", "Ctrl R"),
-        ("Copy selected text", "Ctrl C"),
-        ("Select all text", "Ctrl A"),
-        ("Mail / Calendar", "V  or  Ctrl M"),
-        ("Next field", "Tab"),
-        ("Close overlay", "Esc"),
-    ];
+    let filter = app.model.shortcut_filter.trim().to_ascii_lowercase();
+    let actions: Vec<(&str, &str, String)> = crate::keys::ACTIONS
+        .iter()
+        .map(|(id, label)| (*id, *label, crate::keys::label(&app.model.binding(id))))
+        .filter(|(_, label, keys)| {
+            filter.is_empty()
+                || label.to_ascii_lowercase().contains(&filter)
+                || keys.to_ascii_lowercase().contains(&filter)
+        })
+        .collect();
 
-    div().flex().flex_col().gap(px(16.0)).child(section(
-        p,
-        "Keyboard",
-        div()
-            .flex()
-            .flex_col()
-            .children(rows.iter().map(|(label, keys)| {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .h(px(38.0))
-                    .border_b(px(1.0))
-                    .border_color(p.border.with_alpha(0.35).gpui())
-                    .child(text(*label, 11.5, FontWeight::NORMAL, p.muted))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .h(px(21.0))
-                            .px(px(7.0))
-                            .rounded(px(5.0))
-                            .bg(p.inset.with_alpha(0.8).gpui())
-                            .border_1()
-                            .border_color(p.border.with_alpha(0.6).gpui())
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(p.text.gpui())
-                            .child(*keys),
-                    )
-            })),
-    ))
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(14.0))
+        .child(
+            div()
+                .id("shortcut-filter")
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .h(px(38.0))
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .bg(p.surface.gpui())
+                .border_1()
+                .border_color(p.border.with_alpha(0.5).gpui())
+                .cursor_text()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.focus_field(Field::ShortcutFilter, window, cx);
+                }))
+                .child(icon(IconName::Search, 13.0, p.faint))
+                .child(field_value(
+                    &app.model.shortcut_filter,
+                    "Filter shortcuts…",
+                    app.model.focused == Some(Field::ShortcutFilter),
+                    false,
+                    p,
+                )),
+        )
+        .child(section(
+            p,
+            "Keyboard",
+            div()
+                .flex()
+                .flex_col()
+                .children(actions.iter().map(|(id, label, keys)| {
+                    let action = (*id).to_string();
+                    let action_id = *id;
+                    let capturing = app.model.capturing_binding.as_deref() == Some(*id);
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .h(px(38.0))
+                        .border_b(px(1.0))
+                        .border_color(p.border.with_alpha(0.35).gpui())
+                        .child(text(*label, 11.5, FontWeight::NORMAL, p.muted))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(
+                                    div()
+                                        .id(ElementId::Name(format!("shortcut-bind-{action_id}").into()))
+                                        .flex()
+                                        .items_center()
+                                        .h(px(23.0))
+                                        .min_w(px(70.0))
+                                        .justify_center()
+                                        .px(px(8.0))
+                                        .rounded(px(5.0))
+                                        .bg(if capturing {
+                                            p.accent.with_alpha(0.18).gpui()
+                                        } else {
+                                            p.inset.with_alpha(0.8).gpui()
+                                        })
+                                        .border_1()
+                                        .border_color(if capturing {
+                                            p.accent.gpui()
+                                        } else {
+                                            p.border.with_alpha(0.6).gpui()
+                                        })
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(p.hover.gpui()))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.model.capturing_binding = Some(action.clone());
+                                            this.model.focused = None;
+                                            cx.notify();
+                                        }))
+                                        .child(text(
+                                            if capturing {
+                                                "Press keys…".to_string()
+                                            } else {
+                                                keys.clone()
+                                            },
+                                            10.0,
+                                            FontWeight::MEDIUM,
+                                            if capturing { p.accent } else { p.text },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id(ElementId::Name(format!("shortcut-reset-{action_id}").into()))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(21.0))
+                                        .rounded(px(5.0))
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(p.hover.gpui()))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.model.reset_keybinding(action_id);
+                                            this.toast("Shortcut reset".to_string(), cx);
+                                            cx.notify();
+                                        }))
+                                        .child(icon(IconName::RotateCcw, 11.0, p.faint)),
+                                ),
+                        )
+                })),
+        ))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(
+                    div()
+                        .id("shortcut-reset-all")
+                        .flex()
+                        .items_center()
+                        .h(px(28.0))
+                        .px(px(11.0))
+                        .rounded(px(7.0))
+                        .bg(p.inset.gpui())
+                        .cursor_pointer()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.text.gpui())
+                        .hover(|style| style.bg(p.hover.gpui()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.reset_all_keybindings();
+                            this.toast("All shortcuts reset".to_string(), cx);
+                            cx.notify();
+                        }))
+                        .child("Reset all"),
+                )
+                .child(text(
+                    "Click a key to record a new shortcut · Esc cancels · conflicts are rejected",
+                    10.0,
+                    FontWeight::NORMAL,
+                    p.faint,
+                )),
+        )
 }
 
 fn about(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {

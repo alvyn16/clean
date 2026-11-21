@@ -15,6 +15,9 @@ pub struct Config {
     /// Merge the inboxes of every account into one view. Off by default.
     #[serde(default)]
     pub unified_inbox: bool,
+    /// Editable keyboard bindings, keyed by action id.
+    #[serde(default)]
+    pub keybindings: std::collections::BTreeMap<String, String>,
     pub accounts: Vec<AccountConfig>,
 }
 
@@ -27,6 +30,7 @@ impl Default for Config {
             google: GoogleConfig::default(),
             calendar: CalendarConfig::default(),
             unified_inbox: false,
+            keybindings: crate::keys::default_bindings(),
             accounts: Vec::new(),
         }
     }
@@ -284,6 +288,10 @@ impl Config {
             .with_context(|| format!("reading {}", path.display()))?;
         let mut config: Self =
             toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        // Bindings added in a newer version are merged with the user's choices.
+        let mut keybindings = crate::keys::default_bindings();
+        keybindings.extend(config.keybindings);
+        config.keybindings = keybindings;
         // Signing in again used to append a second entry for the same mailbox.
         let mut seen = std::collections::HashSet::new();
         config
