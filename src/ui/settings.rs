@@ -577,8 +577,7 @@ fn accounts(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                                     .child("Disconnect"),
                             )
                     })
-                    .collect::<Vec<_>>()
-                    .into_iter(),
+                    .collect::<Vec<_>>(),
             ),
         ))
         .when(model.config.accounts.is_empty(), |this| {
@@ -786,6 +785,7 @@ fn toggle_row(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn calendar_field(
     app: &CleanApp,
     id: &'static str,

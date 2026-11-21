@@ -87,8 +87,7 @@ pub fn extract_image_urls(html: &str) -> Vec<String> {
     let mut urls = Vec::new();
     for marker in ["src=", "url("] {
         let mut rest = html;
-        loop {
-            let Some(pos) = rest.find(marker) else { break };
+        while let Some(pos) = rest.find(marker) {
             let mut after = &rest[pos + marker.len()..];
             // Skip whitespace and an optional quote after the marker.
             after = after.trim_start_matches([' ', '\t', '\r', '\n', '"', '\'']);

@@ -198,11 +198,10 @@ pub fn disconnect(config: &mut Config, needle: &str) -> Result<AccountConfig> {
 }
 
 fn resolve_client_id(config: &Config, provided: Option<String>) -> Result<String> {
-    if let Some(value) = provided.or_else(|| std::env::var("CLEAN_GOOGLE_CLIENT_ID").ok()) {
-        if !value.trim().is_empty() {
+    if let Some(value) = provided.or_else(|| std::env::var("CLEAN_GOOGLE_CLIENT_ID").ok())
+        && !value.trim().is_empty() {
             return Ok(value.trim().to_string());
         }
-    }
     if config.google.is_configured() && GoogleConfig::embedded_client_id().is_none() {
         return Ok(config.google.client_id.clone().unwrap_or_default());
     }
@@ -228,19 +227,17 @@ fn resolve_client_id(config: &Config, provided: Option<String>) -> Result<String
 }
 
 fn resolve_client_secret(provided: Option<String>) -> Result<String> {
-    if let Some(value) = provided.or_else(|| std::env::var("CLEAN_GOOGLE_CLIENT_SECRET").ok()) {
-        if !value.trim().is_empty() {
+    if let Some(value) = provided.or_else(|| std::env::var("CLEAN_GOOGLE_CLIENT_SECRET").ok())
+        && !value.trim().is_empty() {
             return Ok(value.trim().to_string());
         }
-    }
     if let Some(default) = GoogleConfig::embedded_client_secret() {
         return Ok(default.to_string());
     }
-    if let Some(value) = oauth::client_secret()? {
-        if !value.trim().is_empty() {
+    if let Some(value) = oauth::client_secret()?
+        && !value.trim().is_empty() {
             return Ok(value);
         }
-    }
 
     print!("Client secret: ");
     std::io::stdout().flush().ok();

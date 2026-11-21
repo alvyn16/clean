@@ -35,20 +35,17 @@ pub fn fetch_sender_avatar(email: &str) -> Result<std::path::PathBuf> {
         match client.get(&url).send() {
             Ok(response) => {
                 let status = response.status();
-                if status.is_success() {
-                    if let Ok(bytes) = response.bytes() {
-                        if bytes.len() > 32 {
+                if status.is_success()
+                    && let Ok(bytes) = response.bytes()
+                        && bytes.len() > 32 {
                             if let Some(parent) = path.parent() {
                                 let _ = std::fs::create_dir_all(parent);
                             }
-                            if let Ok(mut file) = std::fs::File::create(&path) {
-                                if file.write_all(&bytes).is_ok() {
+                            if let Ok(mut file) = std::fs::File::create(&path)
+                                && file.write_all(&bytes).is_ok() {
                                     return Ok(path);
                                 }
-                            }
                         }
-                    }
-                }
                 tracing::debug!("[avatar] {} for {} -> status {}", url, email, status);
             }
             Err(error) => tracing::debug!("[avatar] {} for {} -> error {}", url, email, error),

@@ -117,7 +117,7 @@ fn toolbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                                 14.0,
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.model.week_start = this.model.week_start - Duration::days(7);
+                                this.model.week_start -= Duration::days(7);
                                 cx.notify();
                             })),
                         )
@@ -130,7 +130,7 @@ fn toolbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                                 14.0,
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.model.week_start = this.model.week_start + Duration::days(7);
+                                this.model.week_start += Duration::days(7);
                                 cx.notify();
                             })),
                         ),

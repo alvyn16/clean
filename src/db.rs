@@ -933,6 +933,7 @@ impl Db {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_remote_event(
         &self,
         id: i64,

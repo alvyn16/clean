@@ -208,8 +208,8 @@ fn collect_attachments(mail: &ParsedMail<'_>, out: &mut Vec<Attachment>) {
     let is_attachment = matches!(disposition.disposition, DispositionType::Attachment)
         || (filename.is_some() && !mail.ctype.mimetype.starts_with("text/"));
 
-    if is_attachment {
-        if let Some(filename) = filename {
+    if is_attachment
+        && let Some(filename) = filename {
             let data = mail.get_body_raw().unwrap_or_default();
             out.push(Attachment {
                 size: data.len(),
@@ -218,7 +218,6 @@ fn collect_attachments(mail: &ParsedMail<'_>, out: &mut Vec<Attachment>) {
                 data,
             });
         }
-    }
 
     for part in &mail.subparts {
         collect_attachments(part, out);

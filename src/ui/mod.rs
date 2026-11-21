@@ -154,13 +154,16 @@ impl CleanApp {
         app.load_avatars(cx);
         app.load_sender_avatars(cx);
         if kind == WindowKind::Main {
+            cx.background_executor()
+                .spawn(async { crate::mail::render::prune_caches(); })
+                .detach();
             app.start_live_sync(cx);
             app.start_idle_listeners(cx);
             app.start_calendar_sync_loop(cx);
             app.start_snooze_watcher(cx);
         }
-        if let WindowKind::Message(id) = kind {
-            if let Some(row) = app
+        if let WindowKind::Message(id) = kind
+            && let Some(row) = app
                 .model
                 .db
                 .as_ref()
@@ -170,7 +173,6 @@ impl CleanApp {
                 app.model.selected = Some(0);
                 app.model.reader = ReaderMode::Read;
             }
-        }
         let initial_id = app.model.messages.get(app.model.selected.unwrap_or(0)).map(|m| m.row.id);
         let initial_html = app
             .model
@@ -319,11 +321,10 @@ impl CleanApp {
         cx.spawn(async move |this, cx| {
             if let Some(path) = task.await {
                 this.update(cx, |this, cx| {
-                    if let Some(old) = &this.live_capture_path {
-                        if old != &path {
+                    if let Some(old) = &this.live_capture_path
+                        && old != &path {
                             let _ = std::fs::remove_file(old);
                         }
-                    }
                     this.live_capture_path = Some(path);
                     cx.notify();
                 })
@@ -559,11 +560,10 @@ impl CleanApp {
                 this.update(cx, |this, cx| {
                     // Remove the previous render so render_for_message can't
                     // keep returning the stale one (e.g. gray boxes before images).
-                    if let Some(old) = this.message_render_paths.insert(message_id, path.clone()) {
-                        if old != path {
+                    if let Some(old) = this.message_render_paths.insert(message_id, path.clone())
+                        && old != path {
                             let _ = std::fs::remove_file(&old);
                         }
-                    }
                     cx.notify();
                 })
                 .ok();
@@ -850,8 +850,8 @@ impl CleanApp {
             self.capture_binding(key, ctrl, alt, shift, super_key, cx);
             return;
         }
-        if self.model.show_settings && ctrl && !alt && !shift && !super_key && key.len() == 1 {
-            if let Some(digit) = key.chars().next().and_then(|c| c.to_digit(10)) {
+        if self.model.show_settings && ctrl && !alt && !shift && !super_key && key.len() == 1
+            && let Some(digit) = key.chars().next().and_then(|c| c.to_digit(10)) {
                 let index = digit as usize;
                 if index > 0 && index <= 6 {
                     self.settings_tab = index - 1;
@@ -859,7 +859,6 @@ impl CleanApp {
                     return;
                 }
             }
-        }
 
 
         if key == "escape" {
@@ -927,18 +926,16 @@ impl CleanApp {
                 self.sync_now(cx);
                 return;
             }
-            if self.binding_matches("copy", key, ctrl, alt, shift, super_key) {
-                if let Some(text) = self.live_selected_text() {
-                    if !text.is_empty() {
+            if self.binding_matches("copy", key, ctrl, alt, shift, super_key)
+                && let Some(text) = self.live_selected_text()
+                    && !text.is_empty() {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                         self.toast("Copied selected text".to_string(), cx);
                         cx.notify();
                         return;
                     }
-                }
-            }
-            if self.binding_matches("select_all", key, ctrl, alt, shift, super_key) {
-                if let Some(view) = self.live_view.clone() {
+            if self.binding_matches("select_all", key, ctrl, alt, shift, super_key)
+                && let Some(view) = self.live_view.clone() {
                     if let Ok(v) = view.lock() {
                         let _ = v.select_all();
                     }
@@ -946,7 +943,6 @@ impl CleanApp {
                     cx.notify();
                     return;
                 }
-            }
             if self.binding_matches("send", key, ctrl, alt, shift, super_key)
                 && self.model.focused == Some(Field::DraftBody)
             {
@@ -1006,11 +1002,10 @@ impl CleanApp {
                 self.field_mut(field).push(' ');
             }
             _ => {
-                if let Some(text) = keystroke.key_char.as_deref() {
-                    if !text.is_empty() {
+                if let Some(text) = keystroke.key_char.as_deref()
+                    && !text.is_empty() {
                         self.field_mut(field).push_str(text);
                     }
-                }
             }
         }
 
@@ -1329,7 +1324,7 @@ impl CleanApp {
                     rows.extend(found);
                 }
             }
-            rows.sort_by(|a, b| b.date.cmp(&a.date));
+            rows.sort_by_key(|row| std::cmp::Reverse(row.date));
             rows.dedup_by(|a, b| a.id == b.id);
             rows.truncate(200);
             Ok::<Vec<crate::db::MessageRow>, anyhow::Error>(rows)
@@ -1629,7 +1624,8 @@ impl CleanApp {
         };
 
         let task = cx.background_executor().spawn(async move {
-            let result = match provider {
+            
+            match provider {
                 crate::config::Provider::Google => {
                     if let Some(flow) = prepared_flow {
                         crate::mail::auth::connect_google_with_flow(
@@ -1655,8 +1651,7 @@ impl CleanApp {
                     crate::mail::auth::connect_proton_with_password(&mut config, &email, &password)
                         .map(|account| (config.clone(), account))
                 }
-            };
-            result
+            }
         });
 
         cx.spawn(async move |this, cx| {
@@ -1888,12 +1883,11 @@ impl CleanApp {
 
     /// Delete an event locally (and, on the next sync, from CalDAV).
     fn delete_calendar_event(&mut self, id: usize, cx: &mut Context<Self>) {
-        if let Some(db) = self.model.db.as_ref() {
-            if let Err(error) = db.delete_event(id as i64) {
+        if let Some(db) = self.model.db.as_ref()
+            && let Err(error) = db.delete_event(id as i64) {
                 self.toast(format!("Could not delete event: {error:#}"), cx);
                 return;
             }
-        }
         self.model.reload_events();
         self.toast("Event removed", cx);
         self.sync_calendar(cx);
@@ -2318,11 +2312,10 @@ impl CleanApp {
                 })
                 .unwrap_or_else(|| "Drafts".to_string());
             // Replace any previous copy of this draft on the server.
-            if let Some(id) = &message_id {
-                if let Err(error) = session.delete_by_message_id(&folder, id) {
+            if let Some(id) = &message_id
+                && let Err(error) = session.delete_by_message_id(&folder, id) {
                     tracing::warn!("could not clear previous draft copy: {error:#}");
                 }
-            }
             let raw = crate::mail::smtp::build_message_raw(&from, &draft)?;
             session.append_raw(&folder, &raw, &[::imap::types::Flag::Draft])?;
             session.logout();
@@ -2349,8 +2342,7 @@ impl CleanApp {
                             .spawn(async move {
                                 if let Ok(credential) =
                                     crate::mail::auth::credential(&account, &config)
-                                {
-                                    if let Ok(mut session) =
+                                    && let Ok(mut session) =
                                         crate::mail::imap::connect(&account, &credential)
                                     {
                                         let folder = crate::db::Db::open_default()
@@ -2374,7 +2366,6 @@ impl CleanApp {
                                             .delete_by_message_id(&folder, &message_id);
                                         session.logout();
                                     }
-                                }
                             })
                             .detach();
                     }
@@ -2596,11 +2587,10 @@ impl CleanApp {
                 session.logout();
             }
 
-            if let Some(id) = draft_id {
-                if let Ok(db) = crate::db::Db::open_default() {
+            if let Some(id) = draft_id
+                && let Ok(db) = crate::db::Db::open_default() {
                     let _ = db.delete_draft(id);
                 }
-            }
             Ok::<(), anyhow::Error>(())
         });
 

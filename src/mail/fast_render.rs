@@ -65,14 +65,12 @@ impl FastRenderer {
         let client = reqwest::blocking::Client::new();
         let mut targets: Vec<serde_json::Value> = Vec::new();
         for _ in 0..40 {
-            if let Ok(response) = client.get(format!("http://127.0.0.1:{port}/json/list")).send() {
-                if let Ok(list) = response.json::<Vec<serde_json::Value>>() {
-                    if !list.is_empty() {
+            if let Ok(response) = client.get(format!("http://127.0.0.1:{port}/json/list")).send()
+                && let Ok(list) = response.json::<Vec<serde_json::Value>>()
+                    && !list.is_empty() {
                         targets = list;
                         break;
                     }
-                }
-            }
             std::thread::sleep(Duration::from_millis(100));
         }
         // The first target is often an injected extension background page.

@@ -56,7 +56,7 @@ Requirements on Arch / Omarchy:
 ```bash
 sudo pacman -S --needed base-devel clang cmake pkgconf \
   wayland libxkbcommon fontconfig freetype2 \
-  vulkan-icd-loader openssl zstd alsa-lib webkit2gtk-4.1
+  vulkan-icd-loader openssl zstd alsa-lib
 ```
 
 Then:
@@ -67,6 +67,9 @@ cargo test        # engine tests
 ```
 
 The first GPUI build is heavy. `make` uses `CARGO_BUILD_JOBS=8`; adjust for your machine.
+
+Mail renders and downloaded images are cached under `~/.local/share/clean/`. Stale
+entries (older than 14 days) are pruned automatically at startup and rebuilt on demand.
 
 ### Embedding a Google OAuth client (for distribution)
 

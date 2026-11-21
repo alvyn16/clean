@@ -172,3 +172,50 @@ fn escape_attr(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
+
+/// Remove stale render/image cache files. Caches are rebuilt on demand, so
+/// pruning old entries keeps long-running installs from growing without bound.
+pub fn prune_caches() -> usize {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(14 * 24 * 3600))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let mut removed = 0;
+    for dir in [config::data_dir().join("email-render"), config::data_dir().join("email-images")] {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let stale = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified < cutoff)
+                .unwrap_or(false);
+            if stale && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!("pruned {removed} stale mail cache files");
+    }
+    removed
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn prune_ignores_recent_files() {
+        let dir = std::env::temp_dir().join(format!("clean-render-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("recent.png");
+        std::fs::write(&file, b"x").unwrap();
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(14 * 24 * 3600))
+            .unwrap();
+        assert!(std::fs::metadata(&file).unwrap().modified().unwrap() > cutoff);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

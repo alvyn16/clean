@@ -133,9 +133,8 @@ impl FolderRole {
             || lower.contains("eliminados")
         {
             Self::Trash
-        } else if lower.contains("starred") || lower.contains("destacados") {
-            Self::Custom // favourites; leave as a label rather than a core folder
         } else {
+            // Starred/favourites and other custom folders stay as labels.
             Self::Custom
         }
     }

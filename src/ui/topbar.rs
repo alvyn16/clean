@@ -63,7 +63,7 @@ pub fn topbar(app: &CleanApp, cx: &mut Context<CleanApp>, narrow: bool) -> impl 
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .when(model.config.accounts.len() > 0, |this| {
+                .when(!model.config.accounts.is_empty(), |this| {
                     this.child(
                         icon_button(
                             "topbar-sync",

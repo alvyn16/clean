@@ -82,8 +82,8 @@ fn walk(handle: Handle, out: &mut Vec<EmailBlock>, hidden: bool) {
                     }
                 }
                 "img" => {
-                    if !is_hidden {
-                        if let Some(src) = attr("src") {
+                    if !is_hidden
+                        && let Some(src) = attr("src") {
                             if is_tracking_pixel(&src, &attr("width"), &attr("height")) {
                                 return;
                             }
@@ -96,7 +96,6 @@ fn walk(handle: Handle, out: &mut Vec<EmailBlock>, hidden: bool) {
                                 });
                             }
                         }
-                    }
                 }
                 "video" => {
                     if !is_hidden {
@@ -139,11 +138,11 @@ fn walk(handle: Handle, out: &mut Vec<EmailBlock>, hidden: bool) {
                     let mut buf = String::new();
                     collect_text(&node, &mut buf, is_hidden);
                     let label = buf.trim();
-                    if !label.is_empty() && !is_tracking_url(label) {
-                        if let Some(href) = attr("href") {
-                            if href.starts_with("http://")
+                    if !label.is_empty() && !is_tracking_url(label)
+                        && let Some(href) = attr("href")
+                            && (href.starts_with("http://")
                                 || href.starts_with("https://")
-                                || href.starts_with("mailto:")
+                                || href.starts_with("mailto:"))
                             {
                                 out.push(EmailBlock {
                                     kind: BlockKind::Link,
@@ -152,8 +151,6 @@ fn walk(handle: Handle, out: &mut Vec<EmailBlock>, hidden: bool) {
                                     ..Default::default()
                                 });
                             }
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -206,8 +203,8 @@ fn push_text(out: &mut Vec<EmailBlock>, text: &str) {
         return;
     }
     // Merge consecutive plain text into one paragraph until a blank line.
-    if let Some(last) = out.last_mut() {
-        if last.kind == BlockKind::Paragraph && !clean.starts_with('\n') {
+    if let Some(last) = out.last_mut()
+        && last.kind == BlockKind::Paragraph && !clean.starts_with('\n') {
             if last.text.ends_with('\n') {
                 last.text.push_str(&clean);
             } else {
@@ -216,7 +213,6 @@ fn push_text(out: &mut Vec<EmailBlock>, text: &str) {
             }
             return;
         }
-    }
     out.push(EmailBlock {
         kind: BlockKind::Paragraph,
         text: clean,

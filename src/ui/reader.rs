@@ -566,7 +566,7 @@ fn page_to_coords(pos: Point<Pixels>, bounds: &ImageBounds, page_height: f64) ->
     let mx = pos.x.to_f64();
     let my = pos.y.to_f64();
     if let Some((x, y, w, h)) = b {
-        let px = ((mx - x) / w * 720.0).max(0.0).min(720.0);
+        let px = ((mx - x) / w * 720.0).clamp(0.0, 720.0);
         let py = ((my - y) / h * page_height).max(0.0);
         (px, py)
     } else {
@@ -630,12 +630,11 @@ fn live_email_image(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
                         let (x, y) = page_to_coords(event.position, &down_bounds, page_height);
-                        if let Some(view) = this.live_view.clone() {
-                            if let Ok(v) = view.lock() {
+                        if let Some(view) = this.live_view.clone()
+                            && let Ok(v) = view.lock() {
                                 let _ = v.clear_selection();
                                 let _ = v.mouse("mousePressed", x, y, "left", 1, 1);
                             }
-                        }
                         this.live_dragging = true;
                     }),
                 )
@@ -644,11 +643,10 @@ fn live_email_image(
                         return;
                     }
                     let (x, y) = page_to_coords(event.position, &move_bounds, page_height);
-                    if let Some(view) = this.live_view.clone() {
-                        if let Ok(v) = view.lock() {
+                    if let Some(view) = this.live_view.clone()
+                        && let Ok(v) = view.lock() {
                             let _ = v.mouse("mouseMoved", x, y, "left", 1, 1);
                         }
-                    }
                 }))
                 .on_mouse_up(
                     MouseButton::Left,
@@ -658,8 +656,8 @@ fn live_email_image(
                         }
                         this.live_dragging = false;
                         let (x, y) = page_to_coords(event.position, &up_bounds, page_height);
-                        if let Some(view) = this.live_view.clone() {
-                            if let Ok(v) = view.lock() {
+                        if let Some(view) = this.live_view.clone()
+                            && let Ok(v) = view.lock() {
                                 let _ = v.mouse("mouseReleased", x, y, "left", 0, 1);
                                 // A click without a drag on a link opens it in
                                 // the real browser, like a webmail client.
@@ -667,13 +665,11 @@ fn live_email_image(
                                     .selected_text()
                                     .map(|text| text.trim().is_empty())
                                     .unwrap_or(false);
-                                if no_selection {
-                                    if let Ok(Some(href)) = v.link_at(x, y) {
+                                if no_selection
+                                    && let Ok(Some(href)) = v.link_at(x, y) {
                                         crate::mail::render::open_in_browser(&href);
                                     }
-                                }
                             }
-                        }
                         this.recapture_live(cx);
                     }),
                 ),
@@ -689,8 +685,8 @@ fn render_body(app: &CleanApp, message: &UiMessage, cx: &mut Context<CleanApp>) 
     // For HTML emails, prefer the live CDP capture (identical rendering, with
     // real selection) over the plain cached screenshot.
     if let Some(html) = html_source {
-        if app.live_view_message == Some(message.row.id) {
-            if let Some(path) = &app.live_capture_path {
+        if app.live_view_message == Some(message.row.id)
+            && let Some(path) = &app.live_capture_path {
                 let page_height = app
                     .live_view
                     .as_ref()
@@ -699,7 +695,6 @@ fn render_body(app: &CleanApp, message: &UiMessage, cx: &mut Context<CleanApp>) 
                     .unwrap_or(2000.0);
                 return live_email_image(app, path, message.row.id, page_height, cx);
             }
-        }
         if let Some(path) = app.render_for_message(message.row.id, html) {
             return div()
                 .flex()

@@ -332,11 +332,10 @@ pub fn access_token(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
 
-    if let Some(token) = cached {
-        if now() < expiry - 60 {
+    if let Some(token) = cached
+        && now() < expiry - 60 {
             return Ok(token);
         }
-    }
 
     let client = http()?;
     let tokens = refresh(&client, client_id, client_secret, refresh_token)?;

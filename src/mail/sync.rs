@@ -166,15 +166,13 @@ fn sync_folder(
             };
             let msg_id = db.upsert_message(&row)?;
             // Fetch the full body for new messages so opening them is instant.
-            if fetched_idx < 5 {
-                if let Ok(raw) = session.fetch_body(&folder.name, header.uid) {
-                    if let Ok(parsed) = parse::parse_full(&raw) {
+            if fetched_idx < 5
+                && let Ok(raw) = session.fetch_body(&folder.name, header.uid)
+                    && let Ok(parsed) = parse::parse_full(&raw) {
                         row.id = msg_id;
                         row.snippet = parsed.snippet.clone();
                         store_parsed(db, msg_id, &parsed);
                     }
-                }
-            }
             fetched_idx += 1;
             fetched += 1;
         }
@@ -317,13 +315,12 @@ fn sync_drafts(
             remote: true,
         }) {
             let parsed = parse::parse_attachments(&raw);
-            if !parsed.is_empty() {
-                if let Ok(items) =
+            if !parsed.is_empty()
+                && let Ok(items) =
                     crate::mail::attachments::save_draft_attachments(draft_id, &parsed)
                 {
                     let _ = db.set_draft_attachments(draft_id, &items);
                 }
-            }
             fetched += 1;
         }
     }
@@ -596,11 +593,10 @@ pub fn search_mail(
     // Populate snippets and attachment flags for a handful of results so the
     // list looks right without downloading every matching body.
     for (folder, uid, id) in body_queue {
-        if let Ok(raw) = session.fetch_body(&folder, uid) {
-            if let Ok(parsed) = parse::parse_full(&raw) {
+        if let Ok(raw) = session.fetch_body(&folder, uid)
+            && let Ok(parsed) = parse::parse_full(&raw) {
                 store_parsed(db, id, &parsed);
             }
-        }
     }
     session.logout();
 
@@ -625,7 +621,7 @@ pub fn search_mail(
         }
     }
     let mut rows: Vec<MessageRow> = unique.into_values().map(|(_, _, row)| row).collect();
-    rows.sort_by(|a, b| b.date.cmp(&a.date));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.date));
     rows.truncate(limit as usize);
     Ok(rows)
 }

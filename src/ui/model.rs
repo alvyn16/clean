@@ -733,7 +733,7 @@ impl Model {
                     rows.append(&mut found);
                 }
             }
-            rows.sort_by(|a, b| b.date.cmp(&a.date));
+            rows.sort_by_key(|row| std::cmp::Reverse(row.date));
             rows.truncate(200);
             self.demo = false;
             self.messages = rows.into_iter().map(UiMessage::from_row).collect();
@@ -786,15 +786,14 @@ impl Model {
             };
         }
         let selected = self.selected;
-        if let Some(index) = selected {
-            if let Some(message) = self.messages.get(index) {
+        if let Some(index) = selected
+            && let Some(message) = self.messages.get(index) {
                 let id = message.row.id;
                 if let Some(row) = self.db.as_ref().and_then(|db| db.message(id).ok().flatten()) {
                     self.messages[index].body = row.body_text;
                     self.messages[index].row.body_html = row.body_html;
                 }
             }
-        }
         self.sync_note = None;
     }
 
@@ -874,12 +873,11 @@ impl Model {
         if message.body.is_some() {
             return;
         }
-        if let Ok(Some(row)) = db.message(message.row.id) {
-            if row.body_text.is_some() || row.body_html.is_some() {
+        if let Ok(Some(row)) = db.message(message.row.id)
+            && (row.body_text.is_some() || row.body_html.is_some()) {
                 self.messages[index].body = row.body_text;
                 self.messages[index].row.body_html = row.body_html;
             }
-        }
     }
 
     /// Mark a message read in the local model as soon as it is opened.
@@ -1090,7 +1088,7 @@ pub fn parse_hhmm(value: &str) -> Option<u32> {
 pub fn format_clock(minutes: u32) -> String {
     let hour = (minutes / 60) % 24;
     let minute = minutes % 60;
-    let hour12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+    let hour12 = if hour.is_multiple_of(12) { 12 } else { hour % 12 };
     let suffix = if hour < 12 { "am" } else { "pm" };
     if minute == 0 {
         format!("{hour12} {suffix}")

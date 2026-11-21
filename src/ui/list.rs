@@ -106,11 +106,10 @@ pub fn message_list(
                                 this.model.reader,
                                 crate::ui::model::ReaderMode::Compose
                                     | crate::ui::model::ReaderMode::Reply
-                            ) {
-                                if let Some(field) = this.model.focused {
+                            )
+                                && let Some(field) = this.model.focused {
                                     this.focus_field(field, window, cx);
                                 }
-                            }
                         }))
                         .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, _, cx| {
                             let is_draft = this
@@ -353,7 +352,7 @@ fn message_row(
                         } else {
                             FontWeight::NORMAL
                         })
-                        .text_color(if selected { p.text } else { p.text }.gpui())
+                        .text_color(p.text.gpui())
                         .child(message.row.subject.clone()),
                 )
                 .child(

@@ -416,11 +416,10 @@ fn unseen_count<T: Read + Write>(
 ) -> Result<u32> {
     // STATUS avoids downloading a UID list the way SEARCH UNSEEN would.
     let quoted = format!("\"{}\"", folder.replace('\\', "\\\\").replace('"', "\\\""));
-    if let Ok(raw) = session.run_command_and_read_response(format!("STATUS {quoted} (UNSEEN)")) {
-        if let Some(count) = parse_status_value(&raw, "UNSEEN") {
+    if let Ok(raw) = session.run_command_and_read_response(format!("STATUS {quoted} (UNSEEN)"))
+        && let Some(count) = parse_status_value(&raw, "UNSEEN") {
             return Ok(count);
         }
-    }
     session.select(folder)?;
     Ok(session.uid_search("UNSEEN")?.len() as u32)
 }
