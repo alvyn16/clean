@@ -122,6 +122,18 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                     cx,
                 ))
                 .child(divider(p))
+                .when(model.show_link_row, |this| {
+                    this.child(field_row(
+                        app,
+                        "compose-link",
+                        Field::DraftLink,
+                        "Link",
+                        &model.draft_link,
+                        "https://example.com — Enter to insert",
+                        cx,
+                    ))
+                    .child(divider(p))
+                })
                 .child(field_row(
                     app,
                     "compose-attach-path",
@@ -259,40 +271,32 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                 .bg(p.surface.gpui())
                 .child(
                     icon_button("compose-attach", IconName::Paperclip, p.muted, p.hover, 14.0)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            let receiver = cx.prompt_for_paths(PathPromptOptions {
-                                files: true,
-                                directories: false,
-                                multiple: true,
-                                prompt: Some("Attach files".into()),
-                            });
-                            cx.spawn(async move |this, cx| {
-                                match receiver.await {
-                                    Ok(Ok(Some(paths))) => {
-                                        this.update(cx, |this, cx| {
-                                            this.attach_files(paths, cx);
-                                            cx.notify();
-                                        })
-                                        .ok();
-                                    }
-                                    Ok(Ok(None)) | Err(_) => {}
-                                    Ok(Err(error)) => {
-                                        this.update(cx, |this, cx| {
-                                            this.toast(
-                                                format!("Could not open file picker: {error:#}"),
-                                                cx,
-                                            );
-                                        })
-                                        .ok();
-                                    }
-                                }
-                            })
-                            .detach();
+                        .on_click(cx.listener(|this, _, _, cx| this.prompt_attachments(cx))),
+                )
+                .child(
+                    icon_button("compose-image", IconName::Image, p.muted, p.hover, 14.0)
+                        .on_click(cx.listener(|this, _, _, cx| this.prompt_attachments(cx))),
+                )
+                .child(
+                    icon_button("compose-link", IconName::AtSign, p.muted, p.hover, 14.0)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.model.show_link_row = true;
+                            this.focus_field(Field::DraftLink, window, cx);
                         })),
                 )
-                .child(compose_tool("compose-image", IconName::Image, p, cx))
-                .child(compose_tool("compose-link", IconName::AtSign, p, cx))
-                .child(compose_tool("compose-calendar", IconName::CalendarPlus, p, cx))
+                .child(
+                    icon_button("compose-calendar", IconName::CalendarPlus, p.muted, p.hover, 14.0)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                            if !this.model.draft_body.is_empty() && !this.model.draft_body.ends_with('\n') {
+                                this.model.draft_body.push('\n');
+                            }
+                            this.model.draft_body.push_str(&today);
+                            this.schedule_draft_save(cx);
+                            this.toast("Date inserted".to_string(), cx);
+                            cx.notify();
+                        })),
+                )
                 .child(div().flex_1())
                 .child(
                     div()
@@ -374,17 +378,4 @@ fn divider(p: &Palette) -> impl IntoElement {
         .h(px(1.0))
         .w_full()
         .bg(p.border.with_alpha(0.4).gpui())
-}
-
-fn compose_tool(
-    id: &'static str,
-    icon_name: IconName,
-    p: &Palette,
-    cx: &mut Context<CleanApp>,
-) -> impl IntoElement {
-    icon_button(id, icon_name, p.muted, p.hover, 14.0).on_click(cx.listener(
-        |this, _, _, cx| {
-            this.toast("Attachments are coming soon", cx);
-        },
-    ))
 }

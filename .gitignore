@@ -1,1 +1,6 @@
 /target
+/clean-*.tar.gz
+/packaging/clean-*.tar.gz
+/packaging/src/
+/packaging/pkg/
+/packaging/*.pkg.tar.zst

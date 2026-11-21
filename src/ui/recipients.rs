@@ -63,6 +63,7 @@ mod tests {
             snippet: String::new(),
             flags: String::new(),
             has_attachments: false,
+            snoozed_until: 0,
             body_text: None,
             body_html: None,
         });

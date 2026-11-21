@@ -36,6 +36,7 @@ actions!(
         OpenSettings,
         SyncNow,
         ToggleView,
+        OpenWindow,
         CloseOverlay,
         NextMessage,
         PreviousMessage,
@@ -51,9 +52,18 @@ pub enum MessageAction {
     MoveTo(String),
     MarkUnread(bool),
     Star(bool),
+    Snooze(i64),
+    Unsnooze,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowKind {
+    Main,
+    Message(i64),
 }
 
 pub struct CleanApp {
+    pub window_kind: WindowKind,
     pub model: Model,
     pub focus: FocusHandle,
     pub hovered: Option<usize>,
@@ -93,15 +103,26 @@ pub struct CleanApp {
 
 impl CleanApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::new_with_mode(cx, false)
+        Self::new_with_mode_kind(cx, false, WindowKind::Main)
     }
 
     pub fn new_with_setup(cx: &mut Context<Self>) -> Self {
-        Self::new_with_mode(cx, true)
+        Self::new_with_mode_kind(cx, true, WindowKind::Main)
+    }
+
+    /// A secondary window showing one message; it reuses the shared SQLite
+    /// cache but does not run any sync/IDLE loops.
+    pub fn new_secondary(message_id: i64, cx: &mut Context<Self>) -> Self {
+        Self::new_with_mode_kind(cx, false, WindowKind::Message(message_id))
     }
 
     fn new_with_mode(cx: &mut Context<Self>, force_setup: bool) -> Self {
+        Self::new_with_mode_kind(cx, force_setup, WindowKind::Main)
+    }
+
+    fn new_with_mode_kind(cx: &mut Context<Self>, force_setup: bool, kind: WindowKind) -> Self {
         let mut app = Self {
+            window_kind: kind,
             model: Model::new(force_setup),
             focus: cx.focus_handle(),
             hovered: None,
@@ -132,9 +153,24 @@ impl CleanApp {
         app.watch_omarchy_theme(cx);
         app.load_avatars(cx);
         app.load_sender_avatars(cx);
-        app.start_live_sync(cx);
-        app.start_idle_listeners(cx);
-        app.start_calendar_sync_loop(cx);
+        if kind == WindowKind::Main {
+            app.start_live_sync(cx);
+            app.start_idle_listeners(cx);
+            app.start_calendar_sync_loop(cx);
+            app.start_snooze_watcher(cx);
+        }
+        if let WindowKind::Message(id) = kind {
+            if let Some(row) = app
+                .model
+                .db
+                .as_ref()
+                .and_then(|db| db.message(id).ok().flatten())
+            {
+                app.model.messages = vec![crate::ui::model::UiMessage::from_row(row)];
+                app.model.selected = Some(0);
+                app.model.reader = ReaderMode::Read;
+            }
+        }
         let initial_id = app.model.messages.get(app.model.selected.unwrap_or(0)).map(|m| m.row.id);
         let initial_html = app
             .model
@@ -148,6 +184,10 @@ impl CleanApp {
             if let Some(html) = initial_html.clone() {
                 app.load_live_view(id, html, cx);
             }
+        }
+        if kind != WindowKind::Main && app.model.selected.is_some() {
+            // Load the cached body (and fetch it if necessary) in a message window.
+            app.select_message(0, cx);
         }
         app
     }
@@ -320,6 +360,35 @@ impl CleanApp {
             Ok(path) => self.toast(format!("Saved to {}", path.display()), cx),
             Err(error) => self.toast(format!("Could not save attachment: {error:#}"), cx),
         }
+    }
+
+    /// Open the native file picker and queue the chosen files as attachments.
+    pub fn prompt_attachments(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach files".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    this.update(cx, |this, cx| {
+                        this.attach_files(paths, cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Ok(Ok(None)) | Err(_) => {}
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.toast(format!("Could not open file picker: {error:#}"), cx);
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
     }
 
     /// Queue local files for the composer and persist them with the draft.
@@ -799,6 +868,11 @@ impl CleanApp {
                 cx.notify();
                 return;
             }
+            if self.model.show_snooze_menu {
+                self.model.show_snooze_menu = false;
+                cx.notify();
+                return;
+            }
             if self.model.show_message_menu {
                 self.model.show_message_menu = false;
                 cx.notify();
@@ -883,6 +957,10 @@ impl CleanApp {
                 self.toggle_view(cx);
                 return;
             }
+            if self.binding_matches("open_window", key, ctrl, alt, shift, super_key) {
+                self.open_message_window(cx);
+                return;
+            }
         }
 
         let Some(field) = self.model.focused else {
@@ -900,6 +978,9 @@ impl CleanApp {
                 self.message_action(MessageAction::Archive, cx);
             } else if self.binding_matches("trash", key, ctrl, alt, shift, super_key) {
                 self.message_action(MessageAction::Trash, cx);
+            } else if self.binding_matches("snooze", key, ctrl, alt, shift, super_key) {
+                self.model.show_snooze_menu = !self.model.show_snooze_menu;
+                cx.notify();
             } else if self.binding_matches("mark_unread", key, ctrl, alt, shift, super_key) {
                 let unread = self.model.current().map(|m| m.unread).unwrap_or(false);
                 self.message_action(MessageAction::MarkUnread(!unread), cx);
@@ -961,6 +1042,7 @@ impl CleanApp {
             Field::DraftSubject => &mut self.model.draft_subject,
             Field::DraftBody => &mut self.model.draft_body,
             Field::AttachmentPath => &mut self.model.attachment_path,
+            Field::DraftLink => &mut self.model.draft_link,
             Field::CalendarUrl => &mut self.model.calendar_url,
             Field::CalendarUser => &mut self.model.calendar_user,
             Field::CalendarPassword => &mut self.model.calendar_password,
@@ -989,6 +1071,7 @@ impl CleanApp {
             Field::CalendarUser => Some(Field::CalendarPassword),
             Field::CalendarPassword => Some(Field::CalendarUrl),
             Field::ShortcutFilter => None,
+            Field::DraftLink => Some(Field::DraftBody),
             Field::DraftBody => Some(Field::AttachmentPath),
         };
     }
@@ -1028,6 +1111,20 @@ impl CleanApp {
             }
             Field::ShortcutFilter => {
                 self.model.focused = None;
+                cx.notify();
+            }
+            Field::DraftLink => {
+                let url = self.model.draft_link.trim().to_string();
+                self.model.draft_link.clear();
+                self.model.show_link_row = false;
+                if !url.is_empty() {
+                    if !self.model.draft_body.is_empty() && !self.model.draft_body.ends_with('\n') {
+                        self.model.draft_body.push('\n');
+                    }
+                    self.model.draft_body.push_str(&url);
+                    self.schedule_draft_save(cx);
+                }
+                self.model.focused = Some(Field::DraftBody);
                 cx.notify();
             }
             field @ (Field::EventTitle
@@ -1392,6 +1489,52 @@ impl CleanApp {
             MailView::Calendar => MailView::Mail,
         };
         cx.notify();
+    }
+
+    /// Wake due snoozes: restore them to the list and raise a desktop
+    /// notification. Runs in every window but acts on shared SQLite state, so
+    /// the first window to notice performs the change.
+    fn start_snooze_watcher(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let result = cx.background_executor().spawn(async {
+                    let Ok(db) = crate::db::Db::open_default() else {
+                        return Vec::new();
+                    };
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    let Ok(due) = db.due_snoozes(now) else { return Vec::new() };
+                    let mut subjects = Vec::new();
+                    for id in due {
+                        if let Ok(Some(row)) = db.message(id) {
+                            subjects.push(row.subject);
+                        }
+                        let _ = db.unsnooze_message(id);
+                    }
+                    subjects
+                })
+                .await;
+                if !result.is_empty() {
+                    for subject in &result {
+                        let _ = std::process::Command::new("notify-send")
+                            .arg("Snoozed mail is back")
+                            .arg(subject)
+                            .spawn();
+                    }
+                    this.update(cx, |this, cx| {
+                        this.reload_mail(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+            }
+        })
+        .detach();
     }
 
     /// Toggle the optional merged All Inboxes view.
@@ -1908,6 +2051,44 @@ impl CleanApp {
 
     fn draft_has_content(&self) -> bool {
         !self.model.draft_is_empty() || !self.compose_attachments.is_empty()
+    }
+
+    /// Open the selected message in its own window. The secondary window uses
+    /// the same SQLite cache but no background sync/IDLE loops.
+    pub fn open_message_window(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.model.current().map(|message| message.row.id) else {
+            self.toast("Select a message first".to_string(), cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    point(px(120.0), px(120.0)),
+                    size(px(900.0), px(760.0)),
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("clean — message".into()),
+                    appears_transparent: true,
+                    traffic_light_position: None,
+                }),
+                window_min_size: Some(size(px(600.0), px(420.0))),
+                window_decorations: Some(WindowDecorations::Client),
+                app_id: Some("dev.alvyn.clean".into()),
+                is_resizable: true,
+                ..Default::default()
+            };
+            let result = cx.open_window(options, |_window, cx| {
+                cx.new(|cx| CleanApp::new_secondary(id, cx))
+            });
+            if let Err(error) = result {
+                this.update(cx, |this, cx| {
+                    this.toast(format!("Could not open window: {error:#}"), cx);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Begin a brand-new message.
@@ -2450,6 +2631,29 @@ impl CleanApp {
         .detach();
     }
 
+    /// Snooze the current message until a computed time.
+    pub fn snooze_until(&mut self, preset: &str, cx: &mut Context<Self>) {
+        use chrono::{Datelike, Duration, Local, Timelike};
+        let now = Local::now();
+        let target = match preset {
+            "later" => now + Duration::hours(2),
+            "tomorrow" => (now + Duration::days(1))
+                .with_hour(9).unwrap_or(now)
+                .with_minute(0).unwrap_or(now)
+                .with_second(0).unwrap_or(now),
+            "week" => {
+                let days = (8 - now.weekday().num_days_from_monday()) % 7;
+                let days = if days == 0 { 7 } else { days };
+                (now + Duration::days(days as i64))
+                    .with_hour(9).unwrap_or(now)
+                    .with_minute(0).unwrap_or(now)
+                    .with_second(0).unwrap_or(now)
+            }
+            _ => now + Duration::hours(1),
+        };
+        self.message_action(MessageAction::Snooze(target.timestamp()), cx);
+    }
+
     /// Apply an action to the current message on the server and in the cache,
     /// then update the in-memory model on the main thread.
     pub fn message_action(&mut self, action: MessageAction, cx: &mut Context<Self>) {
@@ -2470,6 +2674,31 @@ impl CleanApp {
         let Some(message) = self.model.current().cloned() else {
             return;
         };
+        // Snoozing is local state: the message stays on the server and returns
+        // to the list at the chosen time (shared across windows via SQLite).
+        match &action {
+            MessageAction::Snooze(until) => {
+                if let Some(db) = self.model.db.as_ref() {
+                    let _ = db.snooze_message(message.row.id, *until);
+                }
+                self.model.remove_message(message.row.id);
+                self.model.show_snooze_menu = false;
+                self.toast("Snoozed — it will return at the chosen time".to_string(), cx);
+                cx.notify();
+                return;
+            }
+            MessageAction::Unsnooze => {
+                if let Some(db) = self.model.db.as_ref() {
+                    let _ = db.unsnooze_message(message.row.id);
+                }
+                self.model.show_snooze_menu = false;
+                self.reload_mail(cx);
+                self.toast("Returned to inbox".to_string(), cx);
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
         let Some(account) = self.account_for_current() else {
             self.toast("Connect an account first", cx);
             return;
@@ -2499,6 +2728,8 @@ impl CleanApp {
             MessageAction::MarkUnread(false) => "Marked read",
             MessageAction::Star(true) => "Starred",
             MessageAction::Star(false) => "Unstarred",
+            MessageAction::Snooze(_) => "Snoozed",
+            MessageAction::Unsnooze => "Returned to inbox",
         }
         .to_string();
         let mark_unread = match &action {
@@ -2583,6 +2814,7 @@ impl CleanApp {
                     }
                     Ok(())
                 }
+                MessageAction::Snooze(_) | MessageAction::Unsnooze => Ok(()),
             };
             session.logout();
             result
@@ -2689,6 +2921,7 @@ impl Render for CleanApp {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &SyncNow, _, cx| this.sync_now(cx)))
             .on_action(cx.listener(|this, _: &ToggleView, _, cx| this.toggle_view(cx)))
+            .on_action(cx.listener(|this, _: &OpenWindow, _, cx| this.open_message_window(cx)))
             .on_action(cx.listener(|this, _: &ArchiveMessage, _, cx| {
                 this.message_action(MessageAction::Archive, cx)
             }))
@@ -2704,7 +2937,21 @@ impl Render for CleanApp {
             }))
             .child(match self.model.screen {
                 Screen::Setup => setup::setup(self, cx).into_any_element(),
-                Screen::Mail => shell::shell(self, cx, window_width).into_any_element(),
+                Screen::Mail => match self.window_kind {
+                    WindowKind::Main => shell::shell(self, cx, window_width).into_any_element(),
+                    WindowKind::Message(_) => {
+                        let p = self.model.palette.clone();
+                        div()
+                            .id("clean-message-window")
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .bg(p.canvas.gpui())
+                            .text_color(p.text.gpui())
+                            .child(reader::reader(self, cx))
+                            .into_any_element()
+                    }
+                },
             })
     }
 }

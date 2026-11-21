@@ -33,6 +33,8 @@ pub struct MessageRow {
     pub snippet: String,
     pub flags: String,
     pub has_attachments: bool,
+    /// Unix time until which this message is hidden from its inbox.
+    pub snoozed_until: i64,
     pub body_text: Option<String>,
     pub body_html: Option<String>,
 }
@@ -139,6 +141,11 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)
             .context("initializing the local mail cache")?;
+        // Older databases predate message snoozing.
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN snoozed_until INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         // Older databases predate the calendar sync columns.
         let _ = conn.execute(
             "ALTER TABLE events ADD COLUMN uid TEXT NOT NULL DEFAULT ''",
@@ -266,14 +273,14 @@ impl Db {
     pub fn message(&self, id: i64) -> Result<Option<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments, body_text,
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments, snoozed_until, body_text,
                     body_html
              FROM messages WHERE id = ?1",
         )?;
         let mut rows = statement.query_map(params![id], |row| {
             let mut message = message_from_row(row)?;
-            message.body_text = row.get(15)?;
-            message.body_html = row.get(16)?;
+            message.body_text = row.get(16)?;
+            message.body_html = row.get(17)?;
             Ok(message)
         })?;
         Ok(rows.next().transpose()?)
@@ -288,7 +295,7 @@ impl Db {
     ) -> Result<Option<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments, snoozed_until
              FROM messages WHERE account_id = ?1 AND folder = ?2 AND uid = ?3 LIMIT 1",
         )?;
         let mut rows = statement.query_map(
@@ -302,7 +309,7 @@ impl Db {
     pub fn thread(&self, thread_id: &str, limit: u32) -> Result<Vec<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments, snoozed_until
              FROM messages WHERE thread_id = ?1
              ORDER BY date ASC LIMIT ?2",
         )?;
@@ -317,6 +324,47 @@ impl Db {
             params![id, text, html],
         )?;
         Ok(())
+    }
+
+    pub fn snooze_message(&self, id: i64, until: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET snoozed_until = ?2 WHERE id = ?1",
+            params![id, until],
+        )?;
+        Ok(())
+    }
+
+    pub fn unsnooze_message(&self, id: i64) -> Result<()> {
+        self.snooze_message(id, 0)
+    }
+
+    pub fn due_snoozes(&self, now: i64) -> Result<Vec<i64>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id FROM messages WHERE snoozed_until > 0 AND snoozed_until <= ?1",
+        )?;
+        let ids = statement
+            .query_map(params![now], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(ids)
+    }
+
+    pub fn snoozed_messages(&self, account_id: &str) -> Result<Vec<MessageRow>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments,
+                    snoozed_until, body_text, body_html
+             FROM messages
+             WHERE account_id = ?1 AND snoozed_until > 0
+             ORDER BY snoozed_until DESC",
+        )?;
+        let rows = statement.query_map(params![account_id], |row| {
+            let mut message = message_from_row(row)?;
+            message.body_text = row.get(16)?;
+            message.body_html = row.get(17)?;
+            Ok(message)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn set_has_attachments(&self, id: i64, value: bool) -> Result<()> {
@@ -699,8 +747,8 @@ impl Db {
         self.conn.execute(
             "INSERT INTO messages
                 (account_id, folder, uid, message_id, thread_id, subject, from_name, from_addr,
-                 to_addrs, cc_addrs, date, snippet, flags, has_attachments, body_text, body_html)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 to_addrs, cc_addrs, date, snippet, flags, has_attachments, snoozed_until, body_text, body_html)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(account_id, folder, uid) DO UPDATE SET
                 message_id = excluded.message_id,
                 thread_id = excluded.thread_id,
@@ -713,6 +761,7 @@ impl Db {
                 snippet = excluded.snippet,
                 flags = excluded.flags,
                 has_attachments = excluded.has_attachments,
+                snoozed_until = excluded.snoozed_until,
                 body_text = coalesce(excluded.body_text, messages.body_text),
                 body_html = coalesce(excluded.body_html, messages.body_html)",
             params![
@@ -730,6 +779,7 @@ impl Db {
                 message.snippet,
                 message.flags,
                 message.has_attachments as i64,
+                message.snoozed_until,
                 message.body_text,
                 message.body_html,
             ],
@@ -752,9 +802,9 @@ impl Db {
     ) -> Result<Vec<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments, snoozed_until
              FROM messages
-             WHERE account_id = ?1 AND folder = ?2
+             WHERE account_id = ?1 AND folder = ?2 AND snoozed_until = 0
              ORDER BY date DESC
              LIMIT ?3 OFFSET ?4",
         )?;
@@ -778,7 +828,7 @@ impl Db {
         let mut statement = self.conn.prepare(
             "SELECT m.id, m.account_id, m.folder, m.uid, m.message_id, m.thread_id, m.subject,
                     m.from_name, m.from_addr, m.to_addrs, m.cc_addrs, m.date, m.snippet, m.flags,
-                    m.has_attachments
+                    m.has_attachments, m.snoozed_until
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
              WHERE messages_fts MATCH ?1
@@ -981,6 +1031,7 @@ fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         snippet: row.get(12)?,
         flags: row.get(13)?,
         has_attachments: row.get::<_, i64>(14)? != 0,
+        snoozed_until: row.get(15)?,
         body_text: None,
         body_html: None,
     })
@@ -1016,6 +1067,7 @@ CREATE TABLE IF NOT EXISTS messages (
     snippet         TEXT NOT NULL DEFAULT '',
     flags           TEXT NOT NULL DEFAULT '',
     has_attachments INTEGER NOT NULL DEFAULT 0,
+    snoozed_until   INTEGER NOT NULL DEFAULT 0,
     body_text       TEXT,
     body_html       TEXT,
     UNIQUE(account_id, folder, uid)
@@ -1155,6 +1207,7 @@ mod tests {
             snippet: "Canyon loop at 8, coffee after.".into(),
             flags: String::new(),
             has_attachments: false,
+            snoozed_until: 0,
             body_text: Some("Canyon loop at 8, coffee after.".into()),
             body_html: None,
         };
@@ -1239,6 +1292,7 @@ mod action_tests {
             snippet: String::new(),
             flags: "\\Seen".into(),
             has_attachments: false,
+            snoozed_until: 0,
             body_text: None,
             body_html: None,
         }).unwrap();
@@ -1362,5 +1416,47 @@ mod draft_tests {
         assert_eq!(rows[0].filename, "note.txt");
         db.delete_draft(id).unwrap();
         assert!(db.draft_attachments(id).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod snooze_tests {
+    use super::*;
+
+    #[test]
+    fn hides_snoozed_and_wakes_due_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).unwrap();
+        let id = db.upsert_message(&MessageRow {
+            id: 0,
+            account_id: "a".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            message_id: None,
+            thread_id: None,
+            subject: "Snoozed test".into(),
+            from_name: String::new(),
+            from_addr: "a@b.com".into(),
+            to_addrs: String::new(),
+            cc_addrs: String::new(),
+            date: 0,
+            snippet: String::new(),
+            flags: String::new(),
+            has_attachments: false,
+            snoozed_until: 0,
+            body_text: None,
+            body_html: None,
+        }).unwrap();
+        assert_eq!(db.list_messages("a", "INBOX", 10, 0).unwrap().len(), 1);
+
+        db.snooze_message(id, 100).unwrap();
+        assert!(db.list_messages("a", "INBOX", 10, 0).unwrap().is_empty());
+        assert_eq!(db.snoozed_messages("a").unwrap().len(), 1);
+        assert!(db.due_snoozes(99).unwrap().is_empty());
+        assert_eq!(db.due_snoozes(100).unwrap(), vec![id]);
+
+        db.unsnooze_message(id).unwrap();
+        assert_eq!(db.list_messages("a", "INBOX", 10, 0).unwrap().len(), 1);
+        assert!(db.snoozed_messages("a").unwrap().is_empty());
     }
 }

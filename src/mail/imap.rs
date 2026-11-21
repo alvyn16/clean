@@ -178,6 +178,13 @@ impl Session {
         }
     }
 
+    pub fn create_folder(&mut self, folder: &str) -> Result<()> {
+        match self {
+            Self::Tls(session) => session.create(folder).map_err(Into::into),
+            Self::Plain(session) => session.create(folder).map_err(Into::into),
+        }
+    }
+
     pub fn select(&mut self, folder: &str) -> Result<MailboxInfo> {
         match self {
             Self::Tls(session) => select(session, folder),

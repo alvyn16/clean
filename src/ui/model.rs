@@ -53,6 +53,7 @@ pub enum Field {
     DraftSubject,
     DraftBody,
     AttachmentPath,
+    DraftLink,
     EventTitle,
     EventDate,
     EventStart,
@@ -114,6 +115,7 @@ impl UiMessage {
             snippet: preview.chars().take(160).collect(),
             flags: "\\Draft".into(),
             has_attachments: false,
+            snoozed_until: 0,
             body_text: Some(draft.body.clone()),
             body_html: None,
         };
@@ -289,6 +291,9 @@ pub struct Model {
     pub draft_bcc: String,
     pub draft_subject: String,
     pub draft_body: String,
+    /// Link URL being inserted into the body from the toolbar.
+    pub draft_link: String,
+    pub show_link_row: bool,
     /// Identity of the draft being edited, if it has been saved before.
     pub draft_id: Option<i64>,
     /// Account a reply/forward should be sent from; falls back to active account.
@@ -308,6 +313,7 @@ pub struct Model {
     pub show_account_manager: bool,
     pub event_draft: EventDraft,
     pub show_account_menu: bool,
+    pub show_snooze_menu: bool,
     pub show_message_menu: bool,
     /// Folder sidebar shown as an overlay when the window is too narrow for
     /// all four panes.
@@ -392,6 +398,8 @@ impl Model {
             draft_bcc: String::new(),
             draft_subject: String::new(),
             draft_body: String::new(),
+            draft_link: String::new(),
+            show_link_row: false,
             draft_id: None,
             draft_account_id: None,
             draft_message_id: None,
@@ -406,6 +414,7 @@ impl Model {
             show_event_sheet: false,
             show_account_manager: false,
             show_account_menu: false,
+            show_snooze_menu: false,
             show_narrow_sidebar: false,
             show_message_menu: false,
             active_account: None,
@@ -683,6 +692,16 @@ impl Model {
         self.folders = folders;
         self.draft_count = db.drafts(&account_id).map(|d| d.len() as u32).unwrap_or(0);
 
+        if self.folder == "snoozed" {
+            let rows = db.snoozed_messages(&account_id).unwrap_or_default();
+            self.demo = false;
+            self.messages = rows.into_iter().map(UiMessage::from_row).collect();
+            self.labels = Vec::new();
+            self.selected = if self.messages.is_empty() { None } else { Some(0) };
+            self.sync_note = None;
+            return;
+        }
+
         // The Drafts folder is served from the local drafts table so drafts are
         // resumable even before a sync round-trip.
         if self.folder == "drafts" {
@@ -786,6 +805,8 @@ impl Model {
         self.draft_bcc.clear();
         self.draft_subject.clear();
         self.draft_body.clear();
+        self.draft_link.clear();
+        self.show_link_row = false;
         self.draft_id = None;
         self.draft_account_id = None;
         self.draft_message_id = None;
@@ -1005,6 +1026,14 @@ impl Model {
         }
         if role == "unified" {
             return self.unified_unread();
+        }
+        if role == "snoozed" {
+            return self
+                .db
+                .as_ref()
+                .and_then(|db| db.snoozed_messages(&self.config.accounts.first()?.id).ok())
+                .map(|rows| rows.len() as u32)
+                .unwrap_or(0);
         }
         self.folders
             .iter()
@@ -1269,6 +1298,7 @@ fn demo_message(
             snippet: snippet.into(),
             flags: if unread { String::new() } else { "\\Seen".into() },
             has_attachments: false,
+            snoozed_until: 0,
             body_text: Some(body.into()),
             body_html: None,
         },

@@ -160,6 +160,7 @@ fn sync_folder(
                 snippet: String::new(),
                 flags: header.flags,
                 has_attachments: false,
+                snoozed_until: 0,
                 body_text: None,
                 body_html: None,
             };
@@ -571,6 +572,7 @@ pub fn search_mail(
                     snippet: String::new(),
                     flags: header.flags,
                     has_attachments: false,
+                    snoozed_until: 0,
                     body_text: None,
                     body_html: None,
                 };

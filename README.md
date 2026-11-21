@@ -38,6 +38,11 @@ account setup.
   pushed to the server, remote changes are pulled, and ETags are used for safe
   updates. A background sync runs every 5 minutes (configurable).
 - Custom-drawn window chrome, spring animations and keyboard navigation.
+- Snooze: hide a message from its inbox until later today, tomorrow or next week;
+  it returns to the list with a desktop notification. The Snoozed folder lists
+  pending messages (state is kept in the shared local cache). Press `S` for the snooze menu.
+- Open a message in a separate window (`Ctrl Shift N` or the reader button). The
+  second window shares the cache, while sync/IDLE/calendar loops stay in the main window.
 - Interactive shortcuts editor under Settings → Shortcuts: filter actions, click a
   keycap and press a new combination to rebind it, reset one or everything. Bindings
   are saved to config and conflicts with other actions are rejected. Defaults:

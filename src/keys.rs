@@ -198,6 +198,8 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("send", "Send message"),
     ("next_field", "Next field"),
     ("close", "Close overlay"),
+    ("open_window", "Open message in new window"),
+    ("snooze", "Snooze message"),
 ];
 
 pub fn default_bindings() -> BTreeMap<String, String> {
@@ -225,6 +227,8 @@ pub fn default_for(id: &str) -> &'static str {
         "send" => "ctrl+enter",
         "next_field" => "tab",
         "close" => "escape",
+        "open_window" => "ctrl+shift+n",
+        "snooze" => "s",
         _ => "",
     }
 }

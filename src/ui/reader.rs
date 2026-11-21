@@ -426,6 +426,17 @@ fn toolbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                     this.message_action(MessageAction::MarkUnread(!unread), cx);
                 })),
         )
+        .child(
+            action("reader-toolbar-new-window", IconName::Maximize)
+                .on_click(cx.listener(|this, _, _, cx| this.open_message_window(cx))),
+        )
+        .child(
+            action("reader-toolbar-snooze", IconName::Clock)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model.show_snooze_menu = !this.model.show_snooze_menu;
+                    cx.notify();
+                })),
+        )
         .child(action("reader-toolbar-more", IconName::Ellipsis))
 }
 

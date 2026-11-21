@@ -4,7 +4,7 @@ use crate::ui::model::MailView;
 use crate::ui::widgets::*;
 use crate::ui::{
     account_manager, calendar_rail, calendar_view, event_sheet, list, reader, settings, sidebar,
-    topbar, CleanApp,
+    topbar, CleanApp, MessageAction,
 };
 
 pub fn shell(app: &CleanApp, cx: &mut Context<CleanApp>, width: Pixels) -> impl IntoElement {
@@ -112,6 +112,70 @@ pub fn shell(app: &CleanApp, cx: &mut Context<CleanApp>, width: Pixels) -> impl 
                     .child(list::message_menu(app, cx)),
             )
         })
+        .when(app.model.show_snooze_menu, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .id("snooze-menu-backdrop")
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.model.show_snooze_menu = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(96.0))
+                            .right(px(56.0))
+                            .w(px(196.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .p(px(6.0))
+                            .rounded(px(10.0))
+                            .bg(p.raised.gpui())
+                            .border_1()
+                            .border_color(p.border.with_alpha(0.8).gpui())
+                            .shadow_lg()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                            .child(snooze_option("later", "Later today · 2 hours", &p, cx))
+                            .child(snooze_option("tomorrow", "Tomorrow morning", &p, cx))
+                            .child(snooze_option("week", "Next week", &p, cx))
+                            .when(
+                                app.model.folder == "snoozed"
+                                    || app
+                                        .model
+                                        .current()
+                                        .is_some_and(|m| m.row.snoozed_until > 0),
+                                |this| {
+                                    this.child(
+                                        div()
+                                            .id("snooze-unsnooze")
+                                            .flex()
+                                            .items_center()
+                                            .h(px(30.0))
+                                            .px(px(9.0))
+                                            .rounded(px(6.0))
+                                            .cursor_pointer()
+                                            .hover(|style| style.bg(p.hover.gpui()))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.message_action(MessageAction::Unsnooze, cx);
+                                            }))
+                                            .child(text(
+                                                "Unsnooze now",
+                                                11.5,
+                                                FontWeight::NORMAL,
+                                                p.text,
+                                            )),
+                                    )
+                                },
+                            ),
+                    ),
+            )
+        })
         .when(app.model.show_account_manager, |this| {
             this.child(account_manager::sheet(app, cx))
         })
@@ -157,4 +221,25 @@ pub fn shell(app: &CleanApp, cx: &mut Context<CleanApp>, width: Pixels) -> impl 
 
 pub fn chrome_hairline(p: &crate::theme::Palette) -> Div {
     hairline(p.border.with_alpha(0.5))
+}
+
+fn snooze_option(
+    preset: &'static str,
+    label: &'static str,
+    p: &crate::theme::Palette,
+    cx: &mut Context<CleanApp>,
+) -> impl IntoElement {
+    div()
+        .id(ElementId::Name(format!("snooze-option-{preset}").into()))
+        .flex()
+        .items_center()
+        .h(px(30.0))
+        .px(px(9.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(|style| style.bg(p.hover.gpui()))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.snooze_until(preset, cx);
+        }))
+        .child(text(label, 11.5, FontWeight::NORMAL, p.text))
 }

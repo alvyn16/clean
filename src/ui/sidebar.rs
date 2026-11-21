@@ -5,11 +5,12 @@ use crate::ui::model::Model;
 use crate::ui::widgets::*;
 use crate::ui::CleanApp;
 
-const NAV: [(&str, &str, IconName); 6] = [
+const NAV: [(&str, &str, IconName); 7] = [
     ("inbox", "Inbox", IconName::Inbox),
     ("archive", "All Mail", IconName::Archive),
     ("sent", "Sent", IconName::Send),
     ("drafts", "Drafts", IconName::FilePen),
+    ("snoozed", "Snoozed", IconName::Clock),
     ("spam", "Spam", IconName::ShieldAlert),
     ("trash", "Trash", IconName::Trash),
 ];
