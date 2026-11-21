@@ -63,6 +63,9 @@ pub struct UiMessage {
     pub unread: bool,
     pub pinned: bool,
     pub body: Option<String>,
+    /// Set when this row represents a locally stored draft that reopens in the
+    /// composer instead of the reader.
+    pub draft_id: Option<i64>,
 }
 
 impl UiMessage {
@@ -74,6 +77,45 @@ impl UiMessage {
             labels: Vec::new(),
             pinned: false,
             body: None,
+            draft_id: None,
+        }
+    }
+
+    pub fn from_draft(draft: crate::db::DraftRow) -> Self {
+        let preview = if !draft.to_addrs.trim().is_empty() {
+            format!("To: {}", draft.to_addrs)
+        } else {
+            draft.body.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        let row = MessageRow {
+            id: draft.id,
+            account_id: draft.account_id.clone(),
+            folder: "drafts".into(),
+            uid: 0,
+            message_id: draft.message_id.clone(),
+            thread_id: None,
+            subject: if draft.subject.trim().is_empty() {
+                "(No subject)".into()
+            } else {
+                draft.subject.clone()
+            },
+            from_name: "Draft".into(),
+            from_addr: String::new(),
+            to_addrs: draft.to_addrs.clone(),
+            date: draft.updated_at,
+            snippet: preview.chars().take(160).collect(),
+            flags: "\\Draft".into(),
+            has_attachments: false,
+            body_text: Some(draft.body.clone()),
+            body_html: None,
+        };
+        Self {
+            row,
+            labels: Vec::new(),
+            unread: false,
+            pinned: false,
+            body: Some(draft.body),
+            draft_id: Some(draft.id),
         }
     }
 
@@ -227,6 +269,14 @@ pub struct Model {
     pub draft_to: String,
     pub draft_subject: String,
     pub draft_body: String,
+    /// Identity of the draft being edited, if it has been saved before.
+    pub draft_id: Option<i64>,
+    pub draft_message_id: Option<String>,
+    pub draft_in_reply_to: Option<String>,
+    pub draft_references: Vec<String>,
+    pub draft_saved_at: Option<std::time::Instant>,
+    /// Number of drafts for the active account, shown in the sidebar.
+    pub draft_count: u32,
     pub sign_in: SignInState,
     pub need_onboarding: bool,
     pub focused: Option<Field>,
@@ -234,6 +284,10 @@ pub struct Model {
     pub show_account_manager: bool,
     pub event_draft: EventDraft,
     pub show_account_menu: bool,
+    pub show_message_menu: bool,
+    /// Folder sidebar shown as an overlay when the window is too narrow for
+    /// all four panes.
+    pub show_narrow_sidebar: bool,
     pub active_account: Option<String>,
 }
 
@@ -298,19 +352,27 @@ impl Model {
             draft_to: String::new(),
             draft_subject: String::new(),
             draft_body: String::new(),
+            draft_id: None,
+            draft_message_id: None,
+            draft_in_reply_to: None,
+            draft_references: Vec::new(),
+            draft_saved_at: None,
+            draft_count: 0,
             sign_in: SignInState::default(),
             need_onboarding,
             focused: None,
             show_event_sheet: false,
             show_account_manager: false,
             show_account_menu: false,
+            show_narrow_sidebar: false,
+            show_message_menu: false,
             active_account: None,
             event_draft: EventDraft {
                 title: String::new(),
                 day: today.format("%Y-%m-%d").to_string(),
                 start: "09:00".into(),
                 end: "10:00".into(),
-                emoji: "📅".into(),
+                emoji: "🐾".into(),
                 color: 0,
             },
         };
@@ -416,7 +478,7 @@ impl Model {
             day: day.format("%Y-%m-%d").to_string(),
             start: format!("{:02}:{:02}", start / 60, start % 60),
             end: format!("{:02}:{:02}", end / 60, end % 60),
-            emoji: "📅".into(),
+            emoji: "🐾".into(),
             color: 0,
         };
         self.show_event_sheet = true;
@@ -442,7 +504,7 @@ impl Model {
             start_min: start as i32,
             end_min: end as i32,
             emoji: if draft.emoji.trim().is_empty() {
-                "📅".into()
+                "🐾".into()
             } else {
                 draft.emoji
             },
@@ -513,19 +575,39 @@ impl Model {
         };
 
         let folders = db.folders(&account_id).unwrap_or_default();
-        if folders.is_empty() {
+        self.demo = false;
+        self.folders = folders;
+        self.draft_count = db.drafts(&account_id).map(|d| d.len() as u32).unwrap_or(0);
+
+        // The Drafts folder is served from the local drafts table so drafts are
+        // resumable even before a sync round-trip.
+        if self.folder == "drafts" {
+            let drafts = db.drafts(&account_id).unwrap_or_default();
+            self.draft_count = drafts.len() as u32;
+            self.messages = drafts.into_iter().map(UiMessage::from_draft).collect();
+            self.labels = self
+                .folders
+                .iter()
+                .filter(|folder| folder.role == "custom")
+                .map(|folder| Label {
+                    name: folder.name.clone(),
+                    count: folder.unread,
+                })
+                .collect();
+            self.selected = None;
+            self.sync_note = None;
+            return;
+        }
+
+        if self.folders.is_empty() {
             // This account has no cached folders yet — show an empty inbox for it,
             // not another account's messages.
-            self.demo = false;
-            self.folders = Vec::new();
             self.messages = Vec::new();
             self.labels = Vec::new();
             self.selected = None;
             self.sync_note = Some("No mail cached for this account".into());
             return;
         }
-        self.demo = false;
-        self.folders = folders;
 
         let folder_name = self
             .folders
@@ -559,7 +641,51 @@ impl Model {
                 Some(0)
             };
         }
+        let selected = self.selected;
+        if let Some(index) = selected {
+            if let Some(message) = self.messages.get(index) {
+                let id = message.row.id;
+                if let Some(row) = self.db.as_ref().and_then(|db| db.message(id).ok().flatten()) {
+                    self.messages[index].body = row.body_text;
+                    self.messages[index].row.body_html = row.body_html;
+                }
+            }
+        }
         self.sync_note = None;
+    }
+
+    /// Clear the composer back to a brand-new, unsaved draft.
+    pub fn reset_draft(&mut self) {
+        self.draft_to.clear();
+        self.draft_subject.clear();
+        self.draft_body.clear();
+        self.draft_id = None;
+        self.draft_message_id = None;
+        self.draft_in_reply_to = None;
+        self.draft_references.clear();
+        self.draft_saved_at = None;
+    }
+
+    pub fn draft_is_empty(&self) -> bool {
+        self.draft_to.trim().is_empty()
+            && self.draft_subject.trim().is_empty()
+            && self.draft_body.trim().is_empty()
+    }
+
+    /// Load a stored draft into the composer fields.
+    pub fn adopt_draft(&mut self, draft: crate::db::DraftRow) {
+        self.draft_to = draft.to_addrs;
+        self.draft_subject = draft.subject;
+        self.draft_body = draft.body;
+        self.draft_id = Some(draft.id);
+        self.draft_message_id = draft.message_id;
+        self.draft_in_reply_to = draft.in_reply_to;
+        self.draft_references = draft
+            .references
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        self.draft_saved_at = Some(std::time::Instant::now());
     }
 
     pub fn select_folder(&mut self, folder: String) {
@@ -597,6 +723,7 @@ impl Model {
         if let Ok(Some(row)) = db.message(message.row.id) {
             if row.body_text.is_some() || row.body_html.is_some() {
                 self.messages[index].body = row.body_text;
+                self.messages[index].row.body_html = row.body_html;
             }
         }
     }
@@ -623,6 +750,76 @@ impl Model {
             .find(|folder| folder.name == folder_name || folder.role == folder_name)
         {
             folder.unread = folder.unread.saturating_sub(1);
+        }
+    }
+
+    /// Resolve the current role to its actual IMAP folder name for the active account.
+    pub fn folder_name_for_role(&self, role: &str) -> Option<String> {
+        self.folders
+            .iter()
+            .find(|folder| folder.role == role)
+            .map(|folder| folder.name.clone())
+    }
+
+    /// Remove a message from the visible list after a server-side action,
+    /// fixing the selection so it doesn't point past the end.
+    pub fn remove_message(&mut self, id: i64) {
+        let Some(index) = self.messages.iter().position(|m| m.row.id == id) else {
+            return;
+        };
+        self.messages.remove(index);
+        self.selected = match self.selected {
+            Some(sel) if sel >= self.messages.len() => {
+                if self.messages.is_empty() { None } else { Some(self.messages.len() - 1) }
+            }
+            other => other,
+        };
+    }
+
+    /// Flip a message's unread state in the model (and folder counts).
+    pub fn set_message_unread(&mut self, id: i64, unread: bool) {
+        let folder_name = {
+            let Some(message) = self.messages.iter_mut().find(|m| m.row.id == id) else {
+                return;
+            };
+            if message.unread == unread {
+                return;
+            }
+            message.unread = unread;
+            if unread {
+                message.row.flags = message.row.flags.replace("\\Seen", "").split_whitespace()
+                    .collect::<Vec<_>>().join(" ");
+            } else if !message.row.flags.contains("\\Seen") {
+                message.row.flags = format!("{} \\Seen", message.row.flags).trim().to_string();
+            }
+            message.row.folder.clone()
+        };
+        if let Some(folder) = self
+            .folders
+            .iter_mut()
+            .find(|folder| folder.name == folder_name || folder.role == folder_name)
+        {
+            if unread {
+                folder.unread = folder.unread.saturating_add(1);
+            } else {
+                folder.unread = folder.unread.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Flip a message's starred/flagged state in the model.
+    pub fn set_message_star(&mut self, id: i64, flagged: bool) {
+        let Some(message) = self.messages.iter_mut().find(|m| m.row.id == id) else {
+            return;
+        };
+        message.pinned = flagged;
+        if flagged {
+            if !message.row.flags.contains("\\Flagged") {
+                message.row.flags = format!("{} \\Flagged", message.row.flags).trim().to_string();
+            }
+        } else {
+            message.row.flags = message.row.flags.replace("\\Flagged", "").split_whitespace()
+                .collect::<Vec<_>>().join(" ");
         }
     }
 
@@ -669,6 +866,9 @@ impl Model {
                 "spam" => 1,
                 _ => 0,
             };
+        }
+        if role == "drafts" {
+            return self.draft_count;
         }
         self.folders
             .iter()
@@ -939,6 +1139,7 @@ fn demo_message(
         unread,
         pinned: false,
         body: Some(body.into()),
+        draft_id: None,
     }
 }
 

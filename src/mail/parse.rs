@@ -52,7 +52,7 @@ pub fn parse_headers_only(raw: &[u8]) -> Result<HeaderSummary> {
         thread_id,
         in_reply_to,
         references,
-        subject: decode_header_text(&subject),
+        subject,
         from: parse_address(&from_value),
         to: parse_addresses(&to_value),
         date,
@@ -66,7 +66,6 @@ pub fn parse_full(raw: &[u8]) -> Result<ParsedMessage> {
 
     let subject = headers
         .get_first_value("Subject")
-        .map(|value| decode_header_text(&value))
         .unwrap_or_default();
     let from_value = headers.get_first_value("From").unwrap_or_default();
     let to_value = headers.get_first_value("To").unwrap_or_default();
@@ -123,8 +122,62 @@ pub fn parse_full(raw: &[u8]) -> Result<ParsedMessage> {
     })
 }
 
-fn find_part<'a>(mail: &'a ParsedMail<'a>, mime: &str) -> Option<&'a ParsedMail<'a>> {
-    if mail.ctype.mimetype.eq_ignore_ascii_case(mime) {
+#[derive(Debug, Clone, Default)]
+pub struct ParsedDraft {
+    pub message_id: Option<String>,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub subject: String,
+    pub body: String,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+}
+
+/// Parse a message stored in the Drafts folder back into compose fields.
+pub fn parse_draft(raw: &[u8]) -> Result<ParsedDraft> {
+    let parsed = parse_mail(raw)?;
+    let (headers, _) = parse_headers(raw)?;
+
+    let header = |name: &str| headers.get_first_value(name).unwrap_or_default();
+    let subject = header("Subject");
+    let message_id = headers
+        .get_first_value("Message-ID")
+        .map(|value| clean_id(&value))
+        .filter(|value| !value.is_empty());
+    let references = headers
+        .get_first_value("References")
+        .map(|value| parse_ids(&value))
+        .unwrap_or_default();
+    let in_reply_to = headers
+        .get_first_value("In-Reply-To")
+        .map(|value| parse_ids(&value))
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+
+    let body = find_part(&parsed, "text/plain")
+        .and_then(|part| part.get_body().ok())
+        .or_else(|| {
+            find_part(&parsed, "text/html")
+                .and_then(|part| part.get_body().ok())
+                .and_then(|html| html2text::from_read(html.as_bytes(), 90).ok())
+        })
+        .unwrap_or_default();
+
+    Ok(ParsedDraft {
+        message_id,
+        to: header("To"),
+        cc: header("Cc"),
+        bcc: header("Bcc"),
+        subject,
+        body,
+        in_reply_to,
+        references,
+    })
+}
+
+fn find_part<'a>(mail: &'a ParsedMail<'a>, mime: &str) -> Option<&'a ParsedMail<'a>> {    if mail.ctype.mimetype.eq_ignore_ascii_case(mime) {
         return Some(mail);
     }
     mail.subparts
@@ -205,12 +258,6 @@ fn clean_id(value: &str) -> String {
         .to_string()
 }
 
-fn decode_header_text(value: &str) -> String {
-    mailparse::parse_header(value.as_bytes())
-        .map(|(header, _)| header.get_value())
-        .unwrap_or_else(|_| value.to_string())
-}
-
 fn make_snippet(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut snippet = collapsed.chars().take(180).collect::<String>();
@@ -218,4 +265,31 @@ fn make_snippet(text: &str) -> String {
         snippet.push('…');
     }
     snippet
+}
+
+#[cfg(test)]
+mod draft_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_draft_back_into_compose_fields() {
+        let raw = concat!(
+            "From: Me <me@example.com>\r\n",
+            "To: Friend <friend@example.com>\r\n",
+            "Cc: Other <other@example.com>\r\n",
+            "Subject: Lunch?\r\n",
+            "Message-ID: <abc@clean.local>\r\n",
+            "In-Reply-To: <parent@example.com>\r\n",
+            "\r\n",
+            "Are you free at noon?\r\n"
+        )
+        .as_bytes();
+        let draft = parse_draft(raw).unwrap();
+        assert_eq!(draft.message_id.as_deref(), Some("abc@clean.local"));
+        assert!(draft.to.contains("friend@example.com"));
+        assert!(draft.cc.contains("other@example.com"));
+        assert_eq!(draft.subject, "Lunch?");
+        assert!(draft.body.contains("free at noon"));
+        assert_eq!(draft.in_reply_to.as_deref(), Some("parent@example.com"));
+    }
 }

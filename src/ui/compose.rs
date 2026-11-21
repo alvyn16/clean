@@ -55,13 +55,24 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                         ),
                 )
                 .child(
-                    icon_button("compose-close", IconName::X, p.muted, p.hover, 14.0).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.model.reader = ReaderMode::Read;
-                            this.model.focused = None;
-                            cx.notify();
-                        }),
-                    ),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .when(model.draft_id.is_some(), |this| {
+                            this.child(text(
+                                "Draft saved",
+                                10.5,
+                                FontWeight::NORMAL,
+                                p.faint,
+                            ))
+                        })
+                        .child(
+                            icon_button("compose-close", IconName::X, p.muted, p.hover, 14.0)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.close_composer(cx);
+                                })),
+                        ),
                 ),
         )
         .child(
@@ -179,9 +190,7 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                         .text_color(p.muted.gpui())
                         .hover(|style| style.bg(p.hover.gpui()))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.model.reader = ReaderMode::Read;
-                            this.model.focused = None;
-                            cx.notify();
+                            this.discard_draft(cx);
                         }))
                         .child("Discard"),
                 )

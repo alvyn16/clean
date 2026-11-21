@@ -5,7 +5,8 @@ use crate::ui::model::{event_color, Field};
 use crate::ui::widgets::*;
 use crate::ui::CleanApp;
 
-const EMOJIS: [&str; 6] = ["📅", "🎉", "🐶", "☕", "🏃", "💤"];
+/// A more expressive, dog-day themed set for calendar events.
+const EMOJIS: [&str; 6] = ["🐾", "🥳", "🐩", "🍦", "🎾", "😴"];
 
 pub fn sheet(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
     let p = &app.model.palette;

@@ -1,6 +1,6 @@
 use gpui_kit::*;
 
-use crate::config::{GoogleConfig, Provider};
+use crate::config::Provider;
 use crate::theme::{Accent, Palette, Rgba, ThemeMode};
 use crate::ui::model::{Field, SetupStep};
 use crate::ui::widgets::*;
@@ -798,7 +798,7 @@ fn password_fields(
                     } else {
                         "https://proton.me/mail/bridge"
                     };
-                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                    crate::mail::render::open_in_browser(url);
                 }))
                 .child(
                     text(

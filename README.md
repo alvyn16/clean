@@ -23,7 +23,7 @@ account setup.
 - Local calendar events with a New Event sheet and one-click "add to calendar" from a
   detected date in a message.
 - Custom-drawn window chrome, spring animations and keyboard navigation
-  (`J`/`K`, `Enter`, `Esc`, `⌘K`, `⌘N`, `⌘R`, `⌘,`).
+  (`J`/`K`, `Enter`, `Esc`, `Ctrl K`, `Ctrl N`, `Ctrl R`, `Ctrl ,`).
 
 ## Build
 

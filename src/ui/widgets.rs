@@ -78,6 +78,26 @@ pub fn ellipsis(value: impl Into<SharedString>, size: f32, weight: FontWeight, c
         .child(value.into())
 }
 
+/// A sender avatar: real cached photo when available, otherwise colored initials.
+pub fn sender_avatar(
+    email: &str,
+    initial: String,
+    color: Rgba,
+    size: f32,
+    font_size: f32,
+    path: Option<gpui_kit::SharedString>,
+) -> gpui_kit::AnyElement {
+    if let Some(path) = path {
+        return img(std::path::PathBuf::from(path.to_string()))
+            .id(ElementId::Name(format!("sender-avatar-{email}").into()))
+            .size(px(size))
+            .rounded_full()
+            .object_fit(gpui_kit::ObjectFit::Cover)
+            .into_any_element();
+    }
+    avatar(initial, color, size, font_size).into_any_element()
+}
+
 pub fn dot(color: Rgba, size: f32) -> Div {
     div()
         .flex_shrink_0()

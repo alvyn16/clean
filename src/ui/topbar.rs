@@ -13,7 +13,7 @@ pub fn topbar_bg(palette: &Palette) -> Rgba {
     }
 }
 
-pub fn topbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
+pub fn topbar(app: &CleanApp, cx: &mut Context<CleanApp>, narrow: bool) -> impl IntoElement {
     let model: &Model = &app.model;
     let p = &model.palette;
     let bg = topbar_bg(p);
@@ -38,6 +38,21 @@ pub fn topbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                 })
                 .child("clean"),
         )
+        .when(narrow, |this| {
+            this.child(
+                icon_button(
+                    "topbar-folders",
+                    IconName::Menu,
+                    p.text,
+                    p.hover,
+                    15.0,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model.show_narrow_sidebar = !this.model.show_narrow_sidebar;
+                    cx.notify();
+                })),
+            )
+        })
         .child(drag_spacer("topbar-drag-left"))
         .child(view_switch(p, selected, cx))
         .child(drag_spacer("topbar-drag-right"))
@@ -73,9 +88,7 @@ pub fn topbar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                         .shadow_sm()
                         .hover(|style| style.opacity(0.9))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.model.reader = crate::ui::model::ReaderMode::Compose;
-                            this.model.focused = Some(crate::ui::Field::DraftTo);
-                            cx.notify();
+                            this.begin_compose(cx);
                         }))
                         .child(icon(IconName::SquarePen, 14.0, p.accent_ink)),
                 ),

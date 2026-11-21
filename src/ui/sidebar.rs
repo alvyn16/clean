@@ -106,7 +106,7 @@ pub fn sidebar(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                 .children(NAV.iter().map(|(role, label, icon_name)| {
                     nav_row(model, p, role, label, *icon_name, model.folder == *role).on_click(
                         cx.listener(move |this, _, _, cx| {
-                            this.model.select_folder((*role).to_string());
+                            this.select_folder_at((*role).to_string(), cx);
                             cx.notify();
                         }),
                     )

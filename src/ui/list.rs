@@ -5,7 +5,11 @@ use crate::ui::model::{format_list_time, label_color, sender_color, Field, Model
 use crate::ui::widgets::*;
 use crate::ui::CleanApp;
 
-pub fn message_list(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
+pub fn message_list(
+    app: &CleanApp,
+    cx: &mut Context<CleanApp>,
+    width: Pixels,
+) -> impl IntoElement {
     let model = &app.model;
     let p = &model.palette;
     let visible: Vec<(usize, &crate::ui::model::UiMessage)> = model
@@ -18,7 +22,7 @@ pub fn message_list(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElem
     div()
         .flex()
         .flex_col()
-        .w(px(336.0))
+        .w(width)
         .h_full()
         .flex_shrink_0()
         .bg(p.surface.gpui())
@@ -93,11 +97,33 @@ pub fn message_list(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElem
                 .children(visible.iter().map(|(index, message)| {
                     let index = *index;
                     let selected = model.selected == Some(index);
-                    message_row(model, p, message, selected).on_click(cx.listener(
-                        move |this, _, _, cx| {
+                    message_row(app, p, message, selected)
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_message(index, cx);
-                        },
-                    ))
+                            if matches!(
+                                this.model.reader,
+                                crate::ui::model::ReaderMode::Compose
+                                    | crate::ui::model::ReaderMode::Reply
+                            ) {
+                                if let Some(field) = this.model.focused {
+                                    this.focus_field(field, window, cx);
+                                }
+                            }
+                        }))
+                        .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, _, cx| {
+                            let is_draft = this
+                                .model
+                                .messages
+                                .get(index)
+                                .map(|message| message.draft_id.is_some())
+                                .unwrap_or(false);
+                            if is_draft {
+                                return;
+                            }
+                            this.select_message(index, cx);
+                            this.model.show_message_menu = true;
+                            cx.notify();
+                        }))
                 }))
                 .child(div().h(px(8.0))),
         )
@@ -172,7 +198,7 @@ fn search_field(model: &Model, p: &Palette, cx: &mut Context<CleanApp>) -> impl 
         .child(
             div()
                 .px(px(4.0))
-                .child(text("⌘K", 9.5, FontWeight::MEDIUM, p.faint)),
+                .child(text("Ctrl K", 9.5, FontWeight::MEDIUM, p.faint)),
         )
 }
 
@@ -199,14 +225,14 @@ fn filter_pill(p: &Palette, label: &str, active: bool) -> impl IntoElement {
 }
 
 fn message_row(
-    model: &Model,
+    app: &CleanApp,
     p: &Palette,
     message: &crate::ui::model::UiMessage,
     selected: bool,
 ) -> Stateful<Div> {
     let unread = message.unread;
     let avatar_color = sender_color(message.sender(), p.is_dark);
-    let time = format_list_time(message.row.date, model.today);
+    let time = format_list_time(message.row.date, app.model.today);
 
     div()
         .id(("message", message.row.id as usize))
@@ -244,7 +270,15 @@ fn message_row(
                 .flex_shrink_0()
                 .when(unread, |this| this.child(dot(p.accent, 6.0))),
         )
-        .child(avatar(message.initial(), avatar_color, 30.0, 12.0))
+        .child(sender_avatar(
+            &message.row.from_addr,
+            message.initial(),
+            avatar_color,
+            30.0,
+            12.0,
+            app.sender_avatar_for(&message.row.from_addr)
+                .map(|p| gpui_kit::SharedString::from(p.to_string_lossy().into_owned())),
+        ))
         .child(
             div()
                 .flex()
@@ -332,5 +366,77 @@ fn message_row(
                             })),
                     )
                 }),
+        )
+}
+
+/// Context menu for the selected message: archive, trash, mark unread,
+/// star/flag, and move to any known folder.
+pub fn message_menu(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
+    use crate::ui::MessageAction;
+
+    let p = &app.model.palette;
+    let current_unread = app.model.current().map(|m| m.unread).unwrap_or(false);
+    let current_flagged = app
+        .model
+        .current()
+        .map(|m| m.row.flags.contains("\\Flagged"))
+        .unwrap_or(false);
+
+    let item = |id: &'static str, label: &'static str| {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .h(px(34.0))
+            .px(px(10.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .hover(|style| style.bg(p.hover.gpui()))
+            .child(text(label, 12.0, FontWeight::NORMAL, p.text))
+    };
+
+    div()
+        .absolute()
+        .top(px(120.0))
+        .left(px(260.0))
+        .w(px(210.0))
+        .p(px(6.0))
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .rounded(px(11.0))
+        .bg(p.surface.gpui())
+        .border_1()
+        .border_color(p.border.with_alpha(0.9).gpui())
+        .shadow_lg()
+        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+        .child(
+            item("msg-menu-unread", if current_unread { "Mark read" } else { "Mark unread" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.model.show_message_menu = false;
+                    let unread = this.model.current().map(|m| m.unread).unwrap_or(false);
+                    this.message_action(MessageAction::MarkUnread(!unread), cx);
+                })),
+        )
+        .child(
+            item("msg-menu-star", if current_flagged { "Remove star" } else { "Star" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.model.show_message_menu = false;
+                    this.star_current(cx);
+                })),
+        )
+        .child(
+            item("msg-menu-archive", "Archive")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model.show_message_menu = false;
+                    this.message_action(MessageAction::Archive, cx);
+                })),
+        )
+        .child(
+            item("msg-menu-trash", "Move to Trash")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model.show_message_menu = false;
+                    this.message_action(MessageAction::Trash, cx);
+                })),
         )
 }

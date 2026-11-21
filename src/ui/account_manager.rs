@@ -1,7 +1,7 @@
 use gpui_kit::*;
 
 use crate::config::Provider;
-use crate::theme::{Palette, Rgba};
+use crate::theme::Rgba;
 use crate::ui::model::Field;
 use crate::ui::widgets::*;
 use crate::ui::CleanApp;

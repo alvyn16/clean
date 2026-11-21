@@ -1,5 +1,12 @@
 pub mod auth;
+pub mod avatars;
+pub mod html;
+pub mod images;
 pub mod imap;
+pub mod render;
+pub mod cdp;
+pub mod fast_render;
+pub mod live_view;
 pub mod oauth;
 pub mod parse;
 pub mod smtp;
@@ -87,18 +94,35 @@ impl FolderRole {
 
     pub fn from_folder_name(name: &str) -> Self {
         let lower = name.to_ascii_lowercase();
-        if lower == "inbox" {
+        if lower == "inbox" || lower.contains("entrada") || lower.contains("recibidos") {
             Self::Inbox
-        } else if lower.contains("sent") {
+        } else if lower.contains("sent")
+            || lower.contains("enviados")
+            || lower.contains("enviadas")
+        {
             Self::Sent
-        } else if lower.contains("draft") {
+        } else if lower.contains("draft") || lower.contains("borrador") {
             Self::Drafts
-        } else if lower.contains("all mail") || lower.contains("archive") {
+        } else if lower.contains("all mail")
+            || lower.contains("archive")
+            || lower.contains("todos")
+            || lower.contains("archivo")
+        {
             Self::Archive
-        } else if lower.contains("spam") || lower.contains("junk") {
+        } else if lower.contains("spam")
+            || lower.contains("junk")
+            || lower.contains("correo no deseado")
+        {
             Self::Spam
-        } else if lower.contains("trash") || lower.contains("deleted") || lower.contains("bin") {
+        } else if lower.contains("trash")
+            || lower.contains("deleted")
+            || lower.contains("bin")
+            || lower.contains("papelera")
+            || lower.contains("eliminados")
+        {
             Self::Trash
+        } else if lower.contains("starred") || lower.contains("destacados") {
+            Self::Custom // favourites; leave as a label rather than a core folder
         } else {
             Self::Custom
         }
@@ -116,4 +140,7 @@ pub struct Draft {
     pub body_html: Option<String>,
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
+    /// Deterministic Message-ID. When set, the same id is reused for the draft
+    /// stored on the server so a resave can replace it in place.
+    pub message_id: Option<String>,
 }

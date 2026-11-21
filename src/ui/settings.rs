@@ -747,12 +747,19 @@ fn toggle_row(
 fn shortcuts(app: &CleanApp) -> impl IntoElement {
     let p = &app.model.palette;
     let rows = [
-        ("Compose", "⌘ N"),
-        ("Search", "⌘ K"),
-        ("Settings", "⌘ ,"),
+        ("Compose", "Ctrl N"),
+        ("Search", "Ctrl K"),
+        ("Settings", "Ctrl ,"),
         ("Next / previous message", "J  /  K"),
-        ("Reply", "R"),
-        ("Sync now", "⌘ R"),
+        ("Open message", "Enter"),
+        ("Archive message", "E"),
+        ("Delete message", "#  or  Del"),
+        ("Mark read / unread", "U"),
+        ("Sync now", "Ctrl R"),
+        ("Copy selected text", "Ctrl C"),
+        ("Select all text", "Ctrl A"),
+        ("Mail / Calendar", "V  or  Ctrl M"),
+        ("Next field", "Tab"),
         ("Close overlay", "Esc"),
     ];
 

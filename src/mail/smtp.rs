@@ -28,7 +28,14 @@ fn build_message(from: &MailAddress, draft: &Draft) -> Result<Message> {
     let mut builder = Message::builder()
         .from(mailbox(from)?)
         .subject(draft.subject.clone())
-        .date_now();
+        .date_now()
+        .message_id(draft.message_id.clone().map(|id| {
+            if id.starts_with('<') {
+                id
+            } else {
+                format!("<{id}>")
+            }
+        }));
 
     for recipient in &draft.to {
         builder = builder.to(mailbox(recipient)?);
@@ -60,6 +67,13 @@ fn build_message(from: &MailAddress, draft: &Draft) -> Result<Message> {
     };
 
     Ok(message)
+}
+
+/// Build the raw RFC822 message bytes for a draft. Used by `send` and by the
+/// sent-folder append so the same bytes are delivered and archived.
+pub fn build_message_raw(from: &MailAddress, draft: &Draft) -> Result<Vec<u8>> {
+    let message = build_message(from, draft)?;
+    Ok(message.formatted().to_vec())
 }
 
 /// Send through the account's SMTP server. `secret` is a password or an OAuth
@@ -124,4 +138,6 @@ mod tests {
         assert!(raw.contains("Subject: Saturday"));
         assert!(raw.contains("crew@example.com"));
     }
+
 }
+

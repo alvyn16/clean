@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 use crate::config;
@@ -36,6 +36,27 @@ pub struct MessageRow {
     pub body_html: Option<String>,
 }
 
+/// A draft being composed. The local `drafts` table is the source of truth for
+/// the Drafts folder; `message_id` is the deterministic id used to replace the
+/// copy stored on the IMAP server.
+#[derive(Debug, Clone)]
+pub struct DraftRow {
+    pub id: i64,
+    pub account_id: String,
+    pub message_id: Option<String>,
+    pub to_addrs: String,
+    pub cc_addrs: String,
+    pub bcc_addrs: String,
+    pub subject: String,
+    pub body: String,
+    pub in_reply_to: Option<String>,
+    pub references: String,
+    pub updated_at: i64,
+    /// True when a copy of this draft is known to exist in the IMAP Drafts
+    /// folder. Server-side deletions are only reconciled for these rows.
+    pub remote: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct EventRow {
     pub id: i64,
@@ -57,6 +78,22 @@ pub struct Db {
     conn: Connection,
 }
 
+/// Message-IDs are stored without angle brackets, matching `MessageRow`.
+fn normalize_message_id(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_string()
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl Db {
     pub fn path() -> PathBuf {
         config::data_dir().join("clean.db")
@@ -72,6 +109,11 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)
             .context("initializing the local mail cache")?;
+        // Older databases predate the drafts `remote` column.
+        let _ = conn.execute(
+            "ALTER TABLE drafts ADD COLUMN remote INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(Self { conn })
     }
 
@@ -227,6 +269,259 @@ impl Db {
             params![id, flags],
         )?;
         Ok(())
+    }
+
+    pub fn delete_message(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Drop every cached message row for one folder (used for the Drafts
+    /// folder, whose contents live in the `drafts` table instead).
+    pub fn clear_folder_messages(&self, account_id: &str, folder: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM messages WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+        )?;
+        Ok(())
+    }
+
+    /// Relocate a cached message to a different folder/uid in place so the next
+    /// sync upsert won't create a duplicate row.
+    pub fn move_message(&self, id: i64, folder: &str, uid: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET folder = ?2, uid = ?3 WHERE id = ?1",
+            params![id, folder, uid as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn folder_by_name(&self, account_id: &str, name: &str) -> Result<Option<FolderRow>> {
+        self.conn
+            .query_row(
+                "SELECT account_id, name, role, delimiter, uid_validity, uid_next, total, unread
+                 FROM folders WHERE account_id = ?1 AND name = ?2",
+                params![account_id, name],
+                |row| {
+                    Ok(FolderRow {
+                        account_id: row.get(0)?,
+                        name: row.get(1)?,
+                        role: row.get(2)?,
+                        delimiter: row.get(3)?,
+                        uid_validity: row.get(4)?,
+                        uid_next: row.get(5)?,
+                        total: row.get(6)?,
+                        unread: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn folder_by_role(&self, account_id: &str, role: &str) -> Result<Option<FolderRow>> {        self.conn
+            .query_row(
+                "SELECT account_id, name, role, delimiter, uid_validity, uid_next, total, unread
+                 FROM folders WHERE account_id = ?1 AND role = ?2 ORDER BY name LIMIT 1",
+                params![account_id, role],
+                |row| {
+                    Ok(FolderRow {
+                        account_id: row.get(0)?,
+                        name: row.get(1)?,
+                        role: row.get(2)?,
+                        delimiter: row.get(3)?,
+                        uid_validity: row.get(4)?,
+                        uid_next: row.get(5)?,
+                        total: row.get(6)?,
+                        unread: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    // ---- drafts ---------------------------------------------------------
+
+    pub fn upsert_draft(&self, draft: &DraftRow) -> Result<i64> {
+        let message_id = draft
+            .message_id
+            .as_deref()
+            .map(normalize_message_id);
+        if draft.id > 0 {
+            self.conn.execute(
+                "UPDATE drafts SET
+                    message_id = ?2, to_addrs = ?3, cc_addrs = ?4, bcc_addrs = ?5,
+                    subject = ?6, body = ?7, in_reply_to = ?8, \"references\" = ?9,
+                    updated_at = ?10
+                 WHERE id = ?1",
+                params![
+                    draft.id,
+                    message_id,
+                    draft.to_addrs,
+                    draft.cc_addrs,
+                    draft.bcc_addrs,
+                    draft.subject,
+                    draft.body,
+                    draft.in_reply_to,
+                    draft.references,
+                    draft.updated_at,
+                ],
+            )?;
+            return Ok(draft.id);
+        }
+        self.conn.execute(
+            "INSERT INTO drafts
+                (account_id, message_id, to_addrs, cc_addrs, bcc_addrs, subject, body,
+                 in_reply_to, \"references\", updated_at, remote)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                draft.account_id,
+                message_id,
+                draft.to_addrs,
+                draft.cc_addrs,
+                draft.bcc_addrs,
+                draft.subject,
+                draft.body,
+                draft.in_reply_to,
+                draft.references,
+                draft.updated_at,
+                draft.remote,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn drafts(&self, account_id: &str) -> Result<Vec<DraftRow>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, account_id, message_id, to_addrs, cc_addrs, bcc_addrs, subject, body,
+                    in_reply_to, \"references\", updated_at, remote
+             FROM drafts WHERE account_id = ?1 ORDER BY updated_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map(params![account_id], |row| {
+            Ok(DraftRow {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                message_id: row.get(2)?,
+                to_addrs: row.get(3)?,
+                cc_addrs: row.get(4)?,
+                bcc_addrs: row.get(5)?,
+                subject: row.get(6)?,
+                body: row.get(7)?,
+                in_reply_to: row.get(8)?,
+                references: row.get(9)?,
+                updated_at: row.get(10)?,
+                remote: row.get::<_, i64>(11)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn draft(&self, id: i64) -> Result<Option<DraftRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, account_id, message_id, to_addrs, cc_addrs, bcc_addrs, subject, body,
+                        in_reply_to, \"references\", updated_at, remote
+                 FROM drafts WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(DraftRow {
+                        id: row.get(0)?,
+                        account_id: row.get(1)?,
+                        message_id: row.get(2)?,
+                        to_addrs: row.get(3)?,
+                        cc_addrs: row.get(4)?,
+                        bcc_addrs: row.get(5)?,
+                        subject: row.get(6)?,
+                        body: row.get(7)?,
+                        in_reply_to: row.get(8)?,
+                        references: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        remote: row.get::<_, i64>(11)? != 0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn draft_by_message_id(
+        &self,
+        account_id: &str,
+        message_id: &str,
+    ) -> Result<Option<DraftRow>> {
+        let message_id = normalize_message_id(message_id);
+        self.conn
+            .query_row(
+                "SELECT id, account_id, message_id, to_addrs, cc_addrs, bcc_addrs, subject, body,
+                        in_reply_to, \"references\", updated_at, remote
+                 FROM drafts WHERE account_id = ?1 AND message_id = ?2 LIMIT 1",
+                params![account_id, message_id],
+                |row| {
+                    Ok(DraftRow {
+                        id: row.get(0)?,
+                        account_id: row.get(1)?,
+                        message_id: row.get(2)?,
+                        to_addrs: row.get(3)?,
+                        cc_addrs: row.get(4)?,
+                        bcc_addrs: row.get(5)?,
+                        subject: row.get(6)?,
+                        body: row.get(7)?,
+                        in_reply_to: row.get(8)?,
+                        references: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        remote: row.get::<_, i64>(11)? != 0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn delete_draft(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM drafts WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Remember whether the IMAP Drafts folder currently holds a copy.
+    pub fn mark_draft_remote(&self, id: i64, remote: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE drafts SET remote = ?2 WHERE id = ?1",
+            params![id, remote],
+        )?;
+        Ok(())
+    }
+
+    /// Drop drafts that were previously on the server but are gone now.
+    /// Drafts never uploaded (or still waiting to upload) are left alone, as
+    /// are very recent ones that may be mid-upload.
+    pub fn prune_remote_drafts(&self, account_id: &str, keep: &[String]) -> Result<usize> {
+        let cutoff = now_unix().saturating_sub(120);
+        let mut statement = self.conn.prepare(
+            "SELECT id, message_id FROM drafts
+             WHERE account_id = ?1 AND remote = 1 AND updated_at < ?2",
+        )?;
+        let stale: Vec<i64> = statement
+            .query_map(params![account_id, cutoff], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .filter_map(|row| row.ok())
+            .filter(|(_, message_id)| match message_id {
+                Some(id) => {
+                    let normalized = normalize_message_id(id);
+                    !keep
+                        .iter()
+                        .any(|kept| normalize_message_id(kept) == normalized)
+                }
+                None => true,
+            })
+            .map(|(id, _)| id)
+            .collect();
+        drop(statement);
+        for id in &stale {
+            self.delete_draft(*id)?;
+        }
+        Ok(stale.len())
     }
 
     pub fn upsert_message(&self, message: &MessageRow) -> Result<i64> {
@@ -389,6 +684,7 @@ impl Db {
     pub fn clear_account(&self, account_id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM messages WHERE account_id = ?1", params![account_id])?;
         self.conn.execute("DELETE FROM folders WHERE account_id = ?1", params![account_id])?;
+        self.conn.execute("DELETE FROM drafts WHERE account_id = ?1", params![account_id])?;
         Ok(())
     }
 }
@@ -452,6 +748,24 @@ CREATE INDEX IF NOT EXISTS idx_messages_folder_date
     ON messages(account_id, folder, date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_message_id
     ON messages(message_id);
+
+CREATE TABLE IF NOT EXISTS drafts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id  TEXT NOT NULL,
+    message_id  TEXT,
+    to_addrs    TEXT NOT NULL DEFAULT '',
+    cc_addrs    TEXT NOT NULL DEFAULT '',
+    bcc_addrs   TEXT NOT NULL DEFAULT '',
+    subject     TEXT NOT NULL DEFAULT '',
+    body        TEXT NOT NULL DEFAULT '',
+    in_reply_to TEXT,
+    "references" TEXT NOT NULL DEFAULT '',
+    updated_at  INTEGER NOT NULL DEFAULT 0,
+    remote      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_account_updated
+    ON drafts(account_id, updated_at DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     subject,
@@ -566,5 +880,144 @@ mod tests {
 
         db.delete_event(events[0].id).unwrap();
         assert!(db.events().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn delete_and_move_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).unwrap();
+        let account_id = "test-account";
+        db.upsert_folder(&FolderRow {
+            account_id: account_id.into(),
+            name: "INBOX".into(),
+            role: "inbox".into(),
+            delimiter: None,
+            uid_validity: 1,
+            uid_next: 2,
+            total: 1,
+            unread: 1,
+        }).unwrap();
+        db.upsert_folder(&FolderRow {
+            account_id: account_id.into(),
+            name: "[Gmail]/Trash".into(),
+            role: "trash".into(),
+            delimiter: None,
+            uid_validity: 1,
+            uid_next: 1,
+            total: 0,
+            unread: 0,
+        }).unwrap();
+        let id = db.upsert_message(&MessageRow {
+            id: 0,
+            account_id: account_id.into(),
+            folder: "INBOX".into(),
+            uid: 42,
+            message_id: None,
+            thread_id: None,
+            subject: "Test".into(),
+            from_name: String::new(),
+            from_addr: "a@b.com".into(),
+            to_addrs: String::new(),
+            date: 0,
+            snippet: String::new(),
+            flags: "\\Seen".into(),
+            has_attachments: false,
+            body_text: None,
+            body_html: None,
+        }).unwrap();
+
+        // folder lookup by role/name
+        assert_eq!(db.folder_by_role(account_id, "trash").unwrap().unwrap().name, "[Gmail]/Trash");
+        assert_eq!(db.folder_by_name(account_id, "INBOX").unwrap().unwrap().role, "inbox");
+
+        // move in place
+        db.move_message(id, "[Gmail]/Trash", 99).unwrap();
+        let moved = db.message(id).unwrap().unwrap();
+        assert_eq!(moved.folder, "[Gmail]/Trash");
+        assert_eq!(moved.uid, 99);
+        assert!(db.find_by_uid(account_id, "INBOX", 42).unwrap().is_none());
+        assert!(db.find_by_uid(account_id, "[Gmail]/Trash", 99).unwrap().is_some());
+
+        // delete
+        db.delete_message(id).unwrap();
+        assert!(db.message(id).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    fn row(id: i64, body: &str, updated_at: i64) -> DraftRow {
+        DraftRow {
+            id,
+            account_id: "a".into(),
+            message_id: Some("<draft@clean.local>".into()),
+            to_addrs: "friend@example.com".into(),
+            cc_addrs: String::new(),
+            bcc_addrs: String::new(),
+            subject: "Hello".into(),
+            body: body.into(),
+            in_reply_to: None,
+            references: String::new(),
+            updated_at,
+            remote: false,
+        }
+    }
+
+    #[test]
+    fn saves_updates_and_deletes_drafts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).unwrap();
+
+        let id = db.upsert_draft(&row(0, "first", 10)).unwrap();
+        assert!(id > 0);
+        let listed = db.drafts("a").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].body, "first");
+
+        // Updating an existing row replaces it instead of inserting a copy.
+        db.upsert_draft(&row(id, "second", 20)).unwrap();
+        let listed = db.drafts("a").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].body, "second");
+        assert_eq!(listed[0].updated_at, 20);
+
+        assert!(db
+            .draft_by_message_id("a", "<draft@clean.local>")
+            .unwrap()
+            .is_some());
+        assert!(db.draft(id).unwrap().is_some());
+
+        db.delete_draft(id).unwrap();
+        assert!(db.drafts("a").unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_reconciles_drafts_that_reached_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).unwrap();
+
+        // A local-only draft is never pruned, even though it has no server copy.
+        let local = db.upsert_draft(&row(0, "local only", 10)).unwrap();
+        assert_eq!(db.prune_remote_drafts("a", &[]).unwrap(), 0);
+        assert!(db.draft(local).unwrap().is_some());
+
+        // Once uploaded it becomes reconcilable.
+        db.mark_draft_remote(local, true).unwrap();
+        assert!(db.draft(local).unwrap().unwrap().remote);
+        assert_eq!(
+            db.prune_remote_drafts("a", &["draft@clean.local".to_string()])
+                .unwrap(),
+            0
+        );
+        assert!(db.draft(local).unwrap().is_some());
+        assert_eq!(db.prune_remote_drafts("a", &[]).unwrap(), 1);
+        assert!(db.draft(local).unwrap().is_none());
     }
 }

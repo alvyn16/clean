@@ -78,6 +78,10 @@ pub struct Appearance {
     pub accent: String,
     pub text_scale: f32,
     pub reduce_motion: bool,
+    #[serde(default = "default_load_remote_images")]
+    pub load_remote_images: bool,
+    #[serde(default = "default_sync_interval")]
+    pub sync_interval_secs: u64,
 }
 
 impl Default for Appearance {
@@ -87,6 +91,8 @@ impl Default for Appearance {
             accent: "blue".into(),
             text_scale: 1.0,
             reduce_motion: false,
+            load_remote_images: true,
+            sync_interval_secs: 10,
         }
     }
 }
@@ -138,6 +144,14 @@ pub struct AccountConfig {
     pub smtp_port: u16,
     #[serde(default = "default_smtp_tls")]
     pub smtp_tls: TlsMode,
+}
+
+fn default_load_remote_images() -> bool {
+    true
+}
+
+fn default_sync_interval() -> u64 {
+    10
 }
 
 fn default_imap_tls() -> TlsMode {
@@ -242,7 +256,14 @@ impl Config {
         }
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        let mut config: Self =
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        // Signing in again used to append a second entry for the same mailbox.
+        let mut seen = std::collections::HashSet::new();
+        config
+            .accounts
+            .retain(|account| seen.insert(account.email.trim().to_ascii_lowercase()));
+        Ok(config)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -267,12 +288,13 @@ impl Config {
     }
 
     pub fn upsert_account(&mut self, account: AccountConfig) {
-        if let Some(existing) = self
-            .accounts
-            .iter_mut()
-            .find(|candidate| candidate.id == account.id)
-        {
-            *existing = account;
+        let email = account.email.trim().to_ascii_lowercase();
+        if let Some(existing) = self.accounts.iter_mut().find(|candidate| {
+            candidate.id == account.id || candidate.email.trim().to_ascii_lowercase() == email
+        }) {
+            // Keep the existing id so cached mail and avatars stay attached.
+            let id = existing.id.clone();
+            *existing = AccountConfig { id, ..account };
         } else {
             self.accounts.push(account);
         }
