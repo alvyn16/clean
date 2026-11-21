@@ -1,4 +1,5 @@
 mod calendar_rail;
+mod recipients;
 mod calendar_view;
 mod compose;
 mod account_manager;
@@ -879,6 +880,8 @@ impl CleanApp {
             Field::Email => &mut self.model.sign_in.email,
             Field::Password => &mut self.model.sign_in.password,
             Field::DraftTo => &mut self.model.draft_to,
+            Field::DraftCc => &mut self.model.draft_cc,
+            Field::DraftBcc => &mut self.model.draft_bcc,
             Field::DraftSubject => &mut self.model.draft_subject,
             Field::DraftBody => &mut self.model.draft_body,
             Field::AttachmentPath => &mut self.model.attachment_path,
@@ -892,7 +895,9 @@ impl CleanApp {
     fn next_field(&mut self, field: Field) {
         self.model.focused = match field {
             Field::Email => Some(Field::Password),
-            Field::DraftTo => Some(Field::DraftSubject),
+            Field::DraftTo => Some(Field::DraftCc),
+            Field::DraftCc => Some(Field::DraftBcc),
+            Field::DraftBcc => Some(Field::DraftSubject),
             Field::DraftSubject => Some(Field::DraftBody),
             Field::Password => Some(Field::Email),
             Field::EventTitle => Some(Field::EventDate),
@@ -916,6 +921,10 @@ impl CleanApp {
             Field::DraftBody => {
                 self.send_draft(cx);
             }
+            field @ (Field::DraftTo | Field::DraftCc | Field::DraftBcc | Field::DraftSubject) => {
+                self.next_field(field);
+                cx.notify();
+            }
             Field::AttachmentPath => {
                 let path = std::path::PathBuf::from(self.model.attachment_path.trim());
                 self.model.attachment_path.clear();
@@ -930,11 +939,12 @@ impl CleanApp {
                 self.model.focused = None;
                 self.search_now(cx);
             }
-            field @ (Field::EventTitle | Field::EventDate | Field::EventStart | Field::EventEnd) => {
-                self.next_field(field);
-                cx.notify();
+            field @ (Field::EventTitle
+            | Field::EventDate
+            | Field::EventStart
+            | Field::EventEnd) => {
+                let _ = field;
             }
-            _ => {}
         }
     }
 
@@ -1677,19 +1687,16 @@ impl CleanApp {
         self.stash_draft(cx);
 
         let sender = format!("{} <{}>", message.sender(), message.row.from_addr);
-        let mut recipients = vec![sender];
+        self.model.draft_to = sender;
+        self.model.draft_cc.clear();
+        self.model.draft_bcc.clear();
+
         if all {
-            for part in message.row.to_addrs.split(',') {
-                let part = part.trim();
-                if part.is_empty() || part.to_ascii_lowercase().contains(&own.to_ascii_lowercase()) {
-                    continue;
-                }
-                if !recipients.iter().any(|existing| existing == part) {
-                    recipients.push(part.to_string());
-                }
-            }
+            let (to, cc, _) = crate::ui::recipients::reply_recipients(&message, &own);
+            self.model.draft_to = to;
+            self.model.draft_cc = cc;
         }
-        self.model.draft_to = recipients.join(", ");
+
         self.model.draft_subject = if message.row.subject.to_ascii_lowercase().starts_with("re:") {
             message.row.subject.clone()
         } else {
@@ -1742,8 +1749,8 @@ impl CleanApp {
             account_id,
             message_id: self.model.draft_message_id.clone(),
             to_addrs: self.model.draft_to.clone(),
-            cc_addrs: String::new(),
-            bcc_addrs: String::new(),
+            cc_addrs: self.model.draft_cc.clone(),
+            bcc_addrs: self.model.draft_bcc.clone(),
             subject: self.model.draft_subject.clone(),
             body: self.model.draft_body.clone(),
             in_reply_to: self.model.draft_in_reply_to.clone(),
@@ -1778,8 +1785,10 @@ impl CleanApp {
             .map(|item| item.path.to_string_lossy().into_owned())
             .collect();
         format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}",
             self.model.draft_to,
+            self.model.draft_cc,
+            self.model.draft_bcc,
             self.model.draft_subject,
             self.model.draft_body,
             self.model.draft_in_reply_to.clone().unwrap_or_default(),
@@ -1853,8 +1862,8 @@ impl CleanApp {
         let draft = crate::mail::Draft {
             from: from.clone(),
             to: parse_addresses(&self.model.draft_to),
-            cc: Vec::new(),
-            bcc: Vec::new(),
+            cc: parse_addresses(&self.model.draft_cc),
+            bcc: parse_addresses(&self.model.draft_bcc),
             subject: self.model.draft_subject.clone(),
             body_text: self.model.draft_body.clone(),
             body_html: None,
@@ -2104,8 +2113,8 @@ impl CleanApp {
                 email: account.email.clone(),
             },
             to: parse_addresses(&self.model.draft_to),
-            cc: Vec::new(),
-            bcc: Vec::new(),
+            cc: parse_addresses(&self.model.draft_cc),
+            bcc: parse_addresses(&self.model.draft_bcc),
             subject: self.model.draft_subject.clone(),
             body_text: self.model.draft_body.clone(),
             body_html: None,
@@ -2554,3 +2563,4 @@ fn run_inner(force_setup: bool) -> anyhow::Result<()> {
         });
     Ok(())
 }
+

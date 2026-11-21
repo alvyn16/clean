@@ -28,6 +28,7 @@ pub struct MessageRow {
     pub from_name: String,
     pub from_addr: String,
     pub to_addrs: String,
+    pub cc_addrs: String,
     pub date: i64,
     pub snippet: String,
     pub flags: String,
@@ -128,6 +129,11 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)
             .context("initializing the local mail cache")?;
+        // Older databases predate the message `cc_addrs` column.
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN cc_addrs TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         // Older databases predate the drafts `remote` column.
         let _ = conn.execute(
             "ALTER TABLE drafts ADD COLUMN remote INTEGER NOT NULL DEFAULT 0",
@@ -229,14 +235,14 @@ impl Db {
     pub fn message(&self, id: i64) -> Result<Option<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, date, snippet, flags, has_attachments, body_text,
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments, body_text,
                     body_html
              FROM messages WHERE id = ?1",
         )?;
         let mut rows = statement.query_map(params![id], |row| {
             let mut message = message_from_row(row)?;
-            message.body_text = row.get(14)?;
-            message.body_html = row.get(15)?;
+            message.body_text = row.get(15)?;
+            message.body_html = row.get(16)?;
             Ok(message)
         })?;
         Ok(rows.next().transpose()?)
@@ -251,7 +257,7 @@ impl Db {
     ) -> Result<Option<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, date, snippet, flags, has_attachments
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments
              FROM messages WHERE account_id = ?1 AND folder = ?2 AND uid = ?3 LIMIT 1",
         )?;
         let mut rows = statement.query_map(
@@ -265,7 +271,7 @@ impl Db {
     pub fn thread(&self, thread_id: &str, limit: u32) -> Result<Vec<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, date, snippet, flags, has_attachments
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments
              FROM messages WHERE thread_id = ?1
              ORDER BY date ASC LIMIT ?2",
         )?;
@@ -662,8 +668,8 @@ impl Db {
         self.conn.execute(
             "INSERT INTO messages
                 (account_id, folder, uid, message_id, thread_id, subject, from_name, from_addr,
-                 to_addrs, date, snippet, flags, has_attachments, body_text, body_html)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 to_addrs, cc_addrs, date, snippet, flags, has_attachments, body_text, body_html)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(account_id, folder, uid) DO UPDATE SET
                 message_id = excluded.message_id,
                 thread_id = excluded.thread_id,
@@ -671,6 +677,7 @@ impl Db {
                 from_name = excluded.from_name,
                 from_addr = excluded.from_addr,
                 to_addrs = excluded.to_addrs,
+                cc_addrs = excluded.cc_addrs,
                 date = excluded.date,
                 snippet = excluded.snippet,
                 flags = excluded.flags,
@@ -687,6 +694,7 @@ impl Db {
                 message.from_name,
                 message.from_addr,
                 message.to_addrs,
+                message.cc_addrs,
                 message.date,
                 message.snippet,
                 message.flags,
@@ -713,7 +721,7 @@ impl Db {
     ) -> Result<Vec<MessageRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, account_id, folder, uid, message_id, thread_id, subject, from_name,
-                    from_addr, to_addrs, date, snippet, flags, has_attachments
+                    from_addr, to_addrs, cc_addrs, date, snippet, flags, has_attachments
              FROM messages
              WHERE account_id = ?1 AND folder = ?2
              ORDER BY date DESC
@@ -738,7 +746,7 @@ impl Db {
         let fts_query = terms.join(" AND ");
         let mut statement = self.conn.prepare(
             "SELECT m.id, m.account_id, m.folder, m.uid, m.message_id, m.thread_id, m.subject,
-                    m.from_name, m.from_addr, m.to_addrs, m.date, m.snippet, m.flags,
+                    m.from_name, m.from_addr, m.to_addrs, m.cc_addrs, m.date, m.snippet, m.flags,
                     m.has_attachments
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
@@ -835,10 +843,11 @@ fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         from_name: row.get(7)?,
         from_addr: row.get(8)?,
         to_addrs: row.get(9)?,
-        date: row.get(10)?,
-        snippet: row.get(11)?,
-        flags: row.get(12)?,
-        has_attachments: row.get::<_, i64>(13)? != 0,
+        cc_addrs: row.get(10)?,
+        date: row.get(11)?,
+        snippet: row.get(12)?,
+        flags: row.get(13)?,
+        has_attachments: row.get::<_, i64>(14)? != 0,
         body_text: None,
         body_html: None,
     })
@@ -869,6 +878,7 @@ CREATE TABLE IF NOT EXISTS messages (
     from_name       TEXT NOT NULL DEFAULT '',
     from_addr       TEXT NOT NULL DEFAULT '',
     to_addrs        TEXT NOT NULL DEFAULT '',
+    cc_addrs        TEXT NOT NULL DEFAULT '',
     date            INTEGER NOT NULL DEFAULT 0,
     snippet         TEXT NOT NULL DEFAULT '',
     flags           TEXT NOT NULL DEFAULT '',
@@ -1002,6 +1012,7 @@ mod tests {
             from_name: "Dog Park Crew".into(),
             from_addr: "crew@example.com".into(),
             to_addrs: "me@example.com".into(),
+            cc_addrs: String::new(),
             date: 1_760_000_000,
             snippet: "Canyon loop at 8, coffee after.".into(),
             flags: String::new(),
@@ -1080,6 +1091,7 @@ mod action_tests {
             from_name: String::new(),
             from_addr: "a@b.com".into(),
             to_addrs: String::new(),
+            cc_addrs: String::new(),
             date: 0,
             snippet: String::new(),
             flags: "\\Seen".into(),

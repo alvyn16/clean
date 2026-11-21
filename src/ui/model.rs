@@ -48,6 +48,8 @@ pub enum Field {
     Email,
     Password,
     DraftTo,
+    DraftCc,
+    DraftBcc,
     DraftSubject,
     DraftBody,
     AttachmentPath,
@@ -103,6 +105,7 @@ impl UiMessage {
             from_name: "Draft".into(),
             from_addr: String::new(),
             to_addrs: draft.to_addrs.clone(),
+            cc_addrs: draft.cc_addrs.clone(),
             date: draft.updated_at,
             snippet: preview.chars().take(160).collect(),
             flags: "\\Draft".into(),
@@ -152,10 +155,11 @@ impl UiMessage {
             return true;
         }
         let haystack = format!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             self.row.subject,
             self.row.from_name,
             self.row.from_addr,
+            self.row.cc_addrs,
             self.preview()
         )
         .to_ascii_lowercase();
@@ -268,6 +272,8 @@ pub struct Model {
     pub today: NaiveDate,
     pub week_start: NaiveDate,
     pub draft_to: String,
+    pub draft_cc: String,
+    pub draft_bcc: String,
     pub draft_subject: String,
     pub draft_body: String,
     /// Identity of the draft being edited, if it has been saved before.
@@ -353,6 +359,8 @@ impl Model {
             today,
             week_start: week_start(today),
             draft_to: String::new(),
+            draft_cc: String::new(),
+            draft_bcc: String::new(),
             draft_subject: String::new(),
             draft_body: String::new(),
             draft_id: None,
@@ -661,6 +669,8 @@ impl Model {
     /// Clear the composer back to a brand-new, unsaved draft.
     pub fn reset_draft(&mut self) {
         self.draft_to.clear();
+        self.draft_cc.clear();
+        self.draft_bcc.clear();
         self.draft_subject.clear();
         self.draft_body.clear();
         self.draft_id = None;
@@ -672,6 +682,8 @@ impl Model {
 
     pub fn draft_is_empty(&self) -> bool {
         self.draft_to.trim().is_empty()
+            && self.draft_cc.trim().is_empty()
+            && self.draft_bcc.trim().is_empty()
             && self.draft_subject.trim().is_empty()
             && self.draft_body.trim().is_empty()
     }
@@ -679,6 +691,8 @@ impl Model {
     /// Load a stored draft into the composer fields.
     pub fn adopt_draft(&mut self, draft: crate::db::DraftRow) {
         self.draft_to = draft.to_addrs;
+        self.draft_cc = draft.cc_addrs;
+        self.draft_bcc = draft.bcc_addrs;
         self.draft_subject = draft.subject;
         self.draft_body = draft.body;
         self.draft_id = Some(draft.id);
@@ -1132,6 +1146,7 @@ fn demo_message(
             from_name: name.into(),
             from_addr: email.into(),
             to_addrs: "you@clean.local".into(),
+            cc_addrs: String::new(),
             date,
             snippet: snippet.into(),
             flags: if unread { String::new() } else { "\\Seen".into() },
@@ -1230,4 +1245,35 @@ pub fn now_minutes() -> u32 {
 
 pub fn minutes_from_time(time: NaiveTime) -> u32 {
     time.hour() * 60 + time.minute()
+}
+
+#[cfg(test)]
+mod draft_field_tests {
+    use super::*;
+
+    #[test]
+    fn adopt_draft_restores_cc_and_bcc() {
+        let mut model = Model::new(false);
+        model.adopt_draft(crate::db::DraftRow {
+            id: 7,
+            account_id: "a".into(),
+            message_id: Some("m@clean.local".into()),
+            to_addrs: "to@example.com".into(),
+            cc_addrs: "cc@example.com".into(),
+            bcc_addrs: "bcc@example.com".into(),
+            subject: "Hi".into(),
+            body: "body".into(),
+            in_reply_to: None,
+            references: String::new(),
+            updated_at: 1,
+            remote: true,
+        });
+        assert_eq!(model.draft_to, "to@example.com");
+        assert_eq!(model.draft_cc, "cc@example.com");
+        assert_eq!(model.draft_bcc, "bcc@example.com");
+        assert!(!model.draft_is_empty());
+        model.reset_draft();
+        assert!(model.draft_is_empty());
+        assert!(model.draft_cc.is_empty() && model.draft_bcc.is_empty());
+    }
 }

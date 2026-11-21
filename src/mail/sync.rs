@@ -150,6 +150,12 @@ fn sync_folder(
                     .map(|address| address.label())
                     .collect::<Vec<_>>()
                     .join(", "),
+                cc_addrs: summary
+                    .cc
+                    .iter()
+                    .map(|address| address.label())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 date: summary.date,
                 snippet: String::new(),
                 flags: header.flags,
@@ -551,6 +557,12 @@ pub fn search_mail(
                     from_addr: summary.from.email,
                     to_addrs: summary
                         .to
+                        .iter()
+                        .map(|address| address.label())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    cc_addrs: summary
+                        .cc
                         .iter()
                         .map(|address| address.label())
                         .collect::<Vec<_>>()

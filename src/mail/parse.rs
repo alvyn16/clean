@@ -14,6 +14,7 @@ pub struct HeaderSummary {
     pub subject: String,
     pub from: MailAddress,
     pub to: Vec<MailAddress>,
+    pub cc: Vec<MailAddress>,
     pub date: i64,
     pub snippet: String,
 }
@@ -23,6 +24,7 @@ pub fn parse_headers_only(raw: &[u8]) -> Result<HeaderSummary> {
     let subject = headers.get_first_value("Subject").unwrap_or_default();
     let from_value = headers.get_first_value("From").unwrap_or_default();
     let to_value = headers.get_first_value("To").unwrap_or_default();
+    let cc_value = headers.get_first_value("Cc").unwrap_or_default();
     let date = headers
         .get_first_value("Date")
         .and_then(|value| mailparse::dateparse(&value).ok())
@@ -55,6 +57,7 @@ pub fn parse_headers_only(raw: &[u8]) -> Result<HeaderSummary> {
         subject,
         from: parse_address(&from_value),
         to: parse_addresses(&to_value),
+        cc: parse_addresses(&cc_value),
         date,
         snippet: String::new(),
     })
@@ -339,5 +342,26 @@ mod attachment_tests {
         assert_eq!(parsed.attachments[0].data, b"hi");
         assert_eq!(parsed.attachments[0].size, 2);
         assert_eq!(parse_attachments(raw).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod cc_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_cc_from_headers() {
+        let raw = concat!(
+            "From: A <a@example.com>\r\n",
+            "To: B <b@example.com>\r\n",
+            "Cc: C <c@example.com>, D <d@example.com>\r\n",
+            "Subject: hi\r\n",
+            "\r\n",
+            "body\r\n"
+        )
+        .as_bytes();
+        let summary = parse_headers_only(raw).unwrap();
+        let cc: Vec<_> = summary.cc.iter().map(|a| a.email.as_str()).collect();
+        assert_eq!(cc, vec!["c@example.com", "d@example.com"]);
     }
 }

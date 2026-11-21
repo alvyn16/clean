@@ -28,7 +28,8 @@ account setup.
 - Attachments: decode and cache files from incoming mail, open with the desktop
   default app or save to Downloads, and attach local files when composing (file
   picker or paste a path). Sent copies and drafts include the same files.
-- Inline reply/compose with autosaved, resumable drafts.
+- Inline reply/compose with To/Cc/Bcc, reply-all that excludes your own address,
+  autosaved and resumable drafts, and files attached from the picker or a path.
 - Local calendar events with a New Event sheet and one-click "add to calendar" from a
   detected date in a message.
 - Custom-drawn window chrome, spring animations and keyboard navigation

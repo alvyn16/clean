@@ -180,7 +180,14 @@ fn reading(
                                                 )),
                                         )
                                         .child(text(
-                                            format!("to {}", message.row.to_addrs),
+                                            if message.row.cc_addrs.trim().is_empty() {
+                                                format!("to {}", message.row.to_addrs)
+                                            } else {
+                                                format!(
+                                                    "to {} · cc {}",
+                                                    message.row.to_addrs, message.row.cc_addrs
+                                                )
+                                            },
                                             10.5,
                                             FontWeight::NORMAL,
                                             p.faint,

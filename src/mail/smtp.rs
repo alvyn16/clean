@@ -228,3 +228,32 @@ mod attachment_tests {
     }
 
 }
+
+#[cfg(test)]
+mod cc_bcc_tests {
+    use super::*;
+
+    #[test]
+    fn includes_cc_and_bcc_headers() {
+        let from = MailAddress { name: "Me".into(), email: "me@example.com".into() };
+        let draft = Draft {
+            from: from.clone(),
+            to: vec![MailAddress { name: "You".into(), email: "you@example.com".into() }],
+            cc: vec![MailAddress { name: "CC".into(), email: "cc@example.com".into() }],
+            bcc: vec![MailAddress { name: "BCC".into(), email: "bcc@example.com".into() }],
+            subject: "with cc".into(),
+            body_text: "body".into(),
+            ..Default::default()
+        };
+        let raw = String::from_utf8_lossy(&build_message_raw(&from, &draft).unwrap()).into_owned();
+        assert!(raw.contains("cc@example.com"), "missing Cc: {raw}");
+        // Bcc is intentionally not written as a header; it lives in the SMTP
+        // envelope so recipients can't see each other.
+        let message = build_message(&from, &draft).unwrap();
+        let envelope = message.envelope();
+        assert!(
+            envelope.to().iter().any(|addr| addr.to_string().contains("bcc@example.com")),
+            "Bcc missing from envelope: {envelope:?}"
+        );
+    }
+}

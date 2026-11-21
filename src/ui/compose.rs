@@ -94,6 +94,26 @@ pub fn compose(app: &CleanApp, cx: &mut Context<CleanApp>) -> impl IntoElement {
                 .child(divider(p))
                 .child(field_row(
                     app,
+                    "compose-cc",
+                    Field::DraftCc,
+                    "Cc",
+                    &model.draft_cc,
+                    "name@example.com",
+                    cx,
+                ))
+                .child(divider(p))
+                .child(field_row(
+                    app,
+                    "compose-bcc",
+                    Field::DraftBcc,
+                    "Bcc",
+                    &model.draft_bcc,
+                    "name@example.com",
+                    cx,
+                ))
+                .child(divider(p))
+                .child(field_row(
+                    app,
                     "compose-subject",
                     Field::DraftSubject,
                     "Subject",
