@@ -336,6 +336,9 @@ fn sync_drafts(
 /// and the on-demand fetch go through here so attachments never get lost.
 fn store_parsed(db: &Db, id: i64, parsed: &crate::mail::ParsedMessage) {
     let _ = db.set_body(id, Some(&parsed.body_text), parsed.body_html.as_deref());
+    if !parsed.snippet.is_empty() {
+        let _ = db.set_snippet(id, &parsed.snippet);
+    }
     let _ = db.set_has_attachments(id, !parsed.attachments.is_empty());
     if parsed.attachments.is_empty() {
         return;
@@ -479,5 +482,162 @@ mod reconciliation_tests {
         sync_account(&config, &db, &account, 50).expect("delete sync");
         assert!(db.message(row.0).unwrap().is_none(), "expunged message still cached");
         println!("reconciled deletion and flag changes");
+    }
+}
+
+/// Search the whole mailbox on the IMAP server. Results are cached locally so
+/// opening one is instant, but the search itself is authoritative — it finds
+/// messages that have never been downloaded into the local FTS index.
+pub fn search_mail(
+    config: &Config,
+    db: &Db,
+    account: &AccountConfig,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<MessageRow>> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .take(5)
+        .map(|term| term.to_string())
+        .collect();
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let credential = auth::credential(account, config)?;
+    let mut session = imap::connect(account, &credential)?;
+    let folders = session.list()?;
+    let per_folder = limit.max(50);
+    let body_fetches = 8usize;
+    let mut body_queue: Vec<(String, u32, i64)> = Vec::new();
+    let mut results: Vec<(i64, MessageRow)> = Vec::new();
+
+    for folder in folders.iter().filter(|folder| folder.selectable) {
+        let role = FolderRole::from_folder_name(&folder.name);
+        if matches!(role, FolderRole::Custom) && folder.name != "INBOX" {
+            continue;
+        }
+        let Ok(uids) = session.search_text(&folder.name, &terms) else {
+            warn!("server search failed in {}", folder.name);
+            continue;
+        };
+        if uids.is_empty() {
+            continue;
+        }
+        let uids: Vec<u32> = uids.into_iter().take(per_folder as usize).collect();
+        let Ok(headers) = session.headers_for_uids(&folder.name, &uids) else {
+            warn!("could not fetch search headers in {}", folder.name);
+            continue;
+        };
+        for header in headers {
+            let Ok(summary) = parse::parse_headers_only(&header.raw) else {
+                continue;
+            };
+            let existing = db
+                .find_by_uid(&account.id, &folder.name, header.uid)
+                .ok()
+                .flatten();
+            let id = if let Some(row) = existing {
+                row.id
+            } else {
+                let row = MessageRow {
+                    id: 0,
+                    account_id: account.id.clone(),
+                    folder: folder.name.clone(),
+                    uid: header.uid,
+                    message_id: summary.message_id,
+                    thread_id: summary.thread_id,
+                    subject: summary.subject,
+                    from_name: summary.from.name,
+                    from_addr: summary.from.email,
+                    to_addrs: summary
+                        .to
+                        .iter()
+                        .map(|address| address.label())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    date: summary.date,
+                    snippet: String::new(),
+                    flags: header.flags,
+                    has_attachments: false,
+                    body_text: None,
+                    body_html: None,
+                };
+                match db.upsert_message(&row) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        warn!("could not cache search hit: {error:#}");
+                        continue;
+                    }
+                }
+            };
+            if let Ok(Some(full)) = db.message(id) {
+                if full.snippet.is_empty() && body_queue.len() < body_fetches {
+                    body_queue.push((folder.name.clone(), header.uid, id));
+                }
+                results.push((id, full));
+            }
+        }
+    }
+
+    // Populate snippets and attachment flags for a handful of results so the
+    // list looks right without downloading every matching body.
+    for (folder, uid, id) in body_queue {
+        if let Ok(raw) = session.fetch_body(&folder, uid) {
+            if let Ok(parsed) = parse::parse_full(&raw) {
+                store_parsed(db, id, &parsed);
+            }
+        }
+    }
+    session.logout();
+
+    // Gmail's All Mail contains copies of everything already in INBOX/Sent,
+    // so collapse duplicates and prefer the canonical folder.
+    let mut unique: HashMap<String, (u8, i64, MessageRow)> = HashMap::new();
+    for (id, row) in results {
+        let key = row
+            .message_id
+            .clone()
+            .unwrap_or_else(|| format!("{}|{}|{}", row.from_addr, row.subject, row.date));
+        let priority = match FolderRole::from_folder_name(&row.folder) {
+            FolderRole::Inbox => 0,
+            FolderRole::Sent => 1,
+            _ => 2,
+        };
+        match unique.get_mut(&key) {
+            Some(existing) if existing.0 <= priority => {}
+            _ => {
+                unique.insert(key, (priority, id, row));
+            }
+        }
+    }
+    let mut rows: Vec<MessageRow> = unique.into_values().map(|(_, _, row)| row).collect();
+    rows.sort_by(|a, b| b.date.cmp(&a.date));
+    rows.truncate(limit as usize);
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn escapes_search_terms() {
+        assert_eq!(crate::mail::imap::escape_search_term("a\"b\\c"), "a\\\"b\\\\c");
+        assert_eq!(crate::mail::imap::escape_search_term("foo\r\nbar"), "foobar");
+    }
+
+    #[test]
+    #[ignore]
+    fn searches_the_server() {
+        let config = Config::load().expect("config");
+        let account = config.accounts.first().expect("account").clone();
+        let db = Db::open_default().expect("db");
+        let rows = search_mail(&config, &db, &account, "UNIQLO", 20).expect("search");
+        println!("server returned {} results", rows.len());
+        for row in rows.iter().take(5) {
+            println!("  {} | {} | {}", row.folder, row.from_addr, row.subject);
+        }
+        assert!(!rows.is_empty(), "expected at least one UNIQLO message");
+        assert!(rows.iter().any(|r| r.subject.to_ascii_lowercase().contains("uniqlo")));
     }
 }

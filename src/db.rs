@@ -290,6 +290,14 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_snippet(&self, id: i64, snippet: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET snippet = ?2 WHERE id = ?1",
+            params![id, snippet],
+        )?;
+        Ok(())
+    }
+
     /// Replace the cached attachment metadata for a message.
     pub fn set_message_attachments(&self, message_id: i64, items: &[AttachmentRow]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;

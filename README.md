@@ -17,6 +17,8 @@ account setup.
 - First-run setup: appearance → connect account. Reachable later from Settings → Accounts.
 - Google (OAuth 2.0 Desktop client), iCloud Mail (app-specific password), and Proton
   (via Proton Mail Bridge) account support.
+- Search across the whole mailbox on the server (IMAP `SEARCH TEXT`) with instant
+  local FTS results shown first; results are deduplicated and cached on open.
 - Local-first: SQLite cache with FTS5 full-text search, credentials in the GNOME/Secret
   Service keyring, no telemetry.
 - IMAP sync with IDLE for instant new mail, lazy body fetching, mark-as-seen, and

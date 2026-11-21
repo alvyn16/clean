@@ -82,6 +82,8 @@ pub struct CleanApp {
     pub draft_upload_pending: bool,
     /// Bumped when a draft is sent or discarded so late uploads can clean up.
     pub draft_upload_epoch: u64,
+    /// Search generation so a late server search can't override a newer query.
+    pub search_gen: u64,
     /// Attachments decoded from the currently open message.
     pub attachments: Vec<crate::db::AttachmentRow>,
     /// Files queued in the composer.
@@ -122,6 +124,7 @@ impl CleanApp {
             draft_uploading: false,
             draft_upload_pending: false,
             draft_upload_epoch: 0,
+            search_gen: 0,
             attachments: Vec::new(),
             compose_attachments: Vec::new(),
         };
@@ -1055,7 +1058,8 @@ impl CleanApp {
     /// Run a cache-wide full-text search (the inline filter stays instant).
     fn search_now(&mut self, cx: &mut Context<Self>) {
         let query = self.model.search.trim().to_string();
-        if self.model.demo || query.is_empty() {
+        if query.is_empty() {
+            self.search_gen = self.search_gen.wrapping_add(1);
             self.search_used = false;
             if !self.model.demo {
                 self.reload_mail(cx);
@@ -1065,20 +1069,69 @@ impl CleanApp {
         }
 
         self.search_used = true;
-        let task = cx
+        self.search_gen = self.search_gen.wrapping_add(1);
+        let generation = self.search_gen;
+        let local_query = query.clone();
+        let local = cx
             .background_executor()
-            .spawn(async move { crate::db::Db::open_default()?.search(&query, 200) });
+            .spawn(async move { crate::db::Db::open_default()?.search(&local_query, 200) });
+
+        // Show cached hits immediately; the server search then replaces them
+        // with a complete result set (including messages never downloaded).
+        cx.spawn(async move |this, cx| {
+            if let Ok(rows) = local.await {
+                this.update(cx, |this, cx| {
+                    if this.search_gen == generation {
+                        this.model.set_search_results(rows);
+                        if this.model.current().is_some() {
+                            this.select_message(0, cx);
+                        }
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
+
+        let account = self.model.account().cloned();
+        let config = self.model.config.clone();
+        let server_query = query.clone();
+        let server = cx.background_executor().spawn(async move {
+            let Some(account) = account else {
+                return Ok(Vec::new());
+            };
+            let db = crate::db::Db::open_default()?;
+            crate::mail::sync::search_mail(&config, &db, &account, &server_query, 200)
+        });
 
         cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(rows) => this.model.set_search_results(rows),
-                    Err(error) => this.toast(format!("Search failed: {error:#}"), cx),
+            match server.await {
+                Ok(rows) => {
+                    this.update(cx, |this, cx| {
+                        if this.search_gen == generation {
+                            this.model.set_search_results(rows);
+                            if this.model.current().is_some() {
+                                this.select_message(0, cx);
+                            }
+                            cx.notify();
+                        }
+                    })
+                    .ok();
                 }
-                cx.notify();
-            })
-            .ok();
+                Err(error) => {
+                    tracing::warn!("server search failed: {error:#}");
+                    this.update(cx, |this, cx| {
+                        if this.search_gen == generation && this.model.messages.is_empty() {
+                            this.toast(
+                                "Server search failed — showing cached results".to_string(),
+                                cx,
+                            );
+                        }
+                    })
+                    .ok();
+                }
+            }
         })
         .detach();
     }
@@ -1121,6 +1174,8 @@ impl CleanApp {
     fn select_folder_at(&mut self, folder: String, cx: &mut Context<Self>) {
         self.stash_draft(cx);
         self.model.show_narrow_sidebar = false;
+        self.search_used = false;
+        self.search_gen = self.search_gen.wrapping_add(1);
         self.model.select_folder(folder);
         self.load_sender_avatars(cx);
         let draft_selected = self
@@ -1146,6 +1201,8 @@ impl CleanApp {
 
     fn switch_account(&mut self, id: String, cx: &mut Context<Self>) {
         self.stash_draft(cx);
+        self.search_used = false;
+        self.search_gen = self.search_gen.wrapping_add(1);
         self.model.set_active_account(id);
         self.model.show_account_menu = false;
         self.load_sender_avatars(cx);
@@ -1487,7 +1544,7 @@ impl CleanApp {
                 });
                 let (total, removed, updated, failures) = task.await;
                 this.update(cx, |this, cx| {
-                    if total > 0 || removed > 0 || updated > 0 {
+                    if (total > 0 || removed > 0 || updated > 0) && !this.search_used {
                         this.reload_mail(cx);
                         // Pre-render the newest few messages so clicking is instant.
                         let top: Vec<(i64, crate::db::MessageRow)> = this
@@ -1575,7 +1632,9 @@ impl CleanApp {
             let (total, removed, updated, failures) = task.await;
             this.update(cx, |this, cx| {
                 this.model.syncing = false;
-                this.reload_mail(cx);
+                if !this.search_used {
+                    this.reload_mail(cx);
+                }
                 let note = match failures {
                     0 => format!(
                         "Synced · {total} new · {removed} removed · {updated} updated"

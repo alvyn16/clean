@@ -224,6 +224,27 @@ impl Session {
         }
     }
 
+    /// Fetch headers for an exact set of UIDs in one round trip.
+    pub fn headers_for_uids(
+        &mut self,
+        folder: &str,
+        uids: &[u32],
+    ) -> Result<Vec<FetchedMessage>> {
+        match self {
+            Self::Tls(session) => headers_for_uids(session, folder, uids),
+            Self::Plain(session) => headers_for_uids(session, folder, uids),
+        }
+    }
+
+    /// Server-side full-text search. Each term is an IMAP `TEXT` key; multiple
+    /// terms are ANDed, matching the local FTS5 behaviour.
+    pub fn search_text(&mut self, folder: &str, terms: &[String]) -> Result<Vec<u32>> {
+        match self {
+            Self::Tls(session) => search_text(session, folder, terms),
+            Self::Plain(session) => search_text(session, folder, terms),
+        }
+    }
+
     pub fn fetch_body(&mut self, folder: &str, uid: u32) -> Result<Vec<u8>> {
         match self {
             Self::Tls(session) => fetch_body(session, folder, uid),
@@ -421,8 +442,12 @@ fn headers<T: Read + Write>(
         format!("{first}:{last}")
     };
     let fetches = session.uid_fetch(range, "(UID FLAGS RFC822.HEADER)")?;
+    Ok(collected_headers(fetches.as_ref()))
+}
+
+fn collected_headers(fetches: &[imap::types::Fetch]) -> Vec<FetchedMessage> {
     let mut messages = Vec::with_capacity(fetches.len());
-    for fetch in fetches.iter() {
+    for fetch in fetches {
         let Some(uid) = fetch.uid else { continue };
         let Some(raw) = fetch.header() else { continue };
         messages.push(FetchedMessage {
@@ -436,7 +461,52 @@ fn headers<T: Read + Write>(
             raw: raw.to_vec(),
         });
     }
-    Ok(messages)
+    messages
+}
+
+fn headers_for_uids<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    folder: &str,
+    uids: &[u32],
+) -> Result<Vec<FetchedMessage>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    session.select(folder)?;
+    let sequence = uids
+        .iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let fetches = session.uid_fetch(sequence, "(UID FLAGS RFC822.HEADER)")?;
+    Ok(collected_headers(fetches.as_ref()))
+}
+
+pub fn escape_search_term(term: &str) -> String {
+    term.chars()
+        .filter(|c| !matches!(c, '\r' | '\n' | '\0'))
+        .flat_map(|c| if c == '"' || c == '\\' { vec!['\\', c] } else { vec![c] })
+        .take(120)
+        .collect()
+}
+
+fn search_text<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    folder: &str,
+    terms: &[String],
+) -> Result<Vec<u32>> {
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    session.select(folder)?;
+    let query = terms
+        .iter()
+        .map(|term| format!("TEXT \"{}\"", escape_search_term(term)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut uids: Vec<u32> = session.uid_search(query)?.into_iter().collect();
+    uids.sort_unstable_by(|a, b| b.cmp(a));
+    Ok(uids)
 }
 
 fn fetch_body<T: Read + Write>(

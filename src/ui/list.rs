@@ -12,11 +12,13 @@ pub fn message_list(
 ) -> impl IntoElement {
     let model = &app.model;
     let p = &model.palette;
+    // A server search can match body text that isn't in the preview, so don't
+    // re-filter its results with the local substring matcher.
     let visible: Vec<(usize, &crate::ui::model::UiMessage)> = model
         .messages
         .iter()
         .enumerate()
-        .filter(|(_, message)| message.matches(&model.search))
+        .filter(|(_, message)| app.search_used || message.matches(&model.search))
         .collect();
 
     div()
