@@ -20,6 +20,14 @@ account setup.
 
 ![clean — inbox, reader and calendar rail](docs/screenshot.png)
 
+**Reading an email with full HTML/CSS rendering:**
+
+![Reading an email](docs/reading.png)
+
+**Settings — themes, accounts, CalDAV, shortcuts:**
+
+![Settings](docs/settings.png)
+
 ## Features
 
 - Three-pane mail layout with an Upcoming calendar rail, modelled on the reference UI.
