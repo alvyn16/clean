@@ -155,7 +155,10 @@ impl CleanApp {
         app.load_sender_avatars(cx);
         if kind == WindowKind::Main {
             cx.background_executor()
-                .spawn(async { crate::mail::render::prune_caches(); })
+                .spawn(async {
+                    crate::mail::render::prune_browser_profiles();
+                    crate::mail::render::prune_caches();
+                })
                 .detach();
             app.start_live_sync(cx);
             app.start_idle_listeners(cx);
@@ -183,9 +186,6 @@ impl CleanApp {
             app.refresh_attachments(id, cx);
             app.load_email_images(id, initial_html.as_deref(), cx);
             app.load_rendered_email(id, initial_html.as_deref(), cx);
-            if let Some(html) = initial_html.clone() {
-                app.load_live_view(id, html, cx);
-            }
         }
         if kind != WindowKind::Main && app.model.selected.is_some() {
             // Load the cached body (and fetch it if necessary) in a message window.
@@ -223,6 +223,26 @@ impl CleanApp {
             .map(|b| format!("{b:02x}"))
             .collect();
         self.email_images.get(&hash).cloned()
+    }
+
+    /// Start the live Chromium page only when text selection is actually
+    /// requested. Until then the cached render image suffices, avoiding a
+    /// ~180 MB browser helper tree while the app is idle.
+    pub fn ensure_live_view(&mut self, cx: &mut Context<Self>) {
+        if self.live_view.is_some() && self.live_capture_path.is_some() {
+            return;
+        }
+        let Some(message) = self.model.current().cloned() else { return };
+        let html = self
+            .model
+            .db
+            .as_ref()
+            .and_then(|db| db.message(message.row.id).ok().flatten())
+            .and_then(|row| row.body_html)
+            .or(message.row.body_html);
+        let Some(html) = html else { return };
+        self.toast("Preparing text selection…".to_string(), cx);
+        self.load_live_view(message.row.id, html, cx);
     }
 
     /// Load an HTML email into the live CDP page so its text is selectable,
@@ -926,16 +946,21 @@ impl CleanApp {
                 self.sync_now(cx);
                 return;
             }
-            if self.binding_matches("copy", key, ctrl, alt, shift, super_key)
-                && let Some(text) = self.live_selected_text()
-                    && !text.is_empty() {
+            if self.binding_matches("copy", key, ctrl, alt, shift, super_key) {
+                if let Some(text) = self.live_selected_text() {
+                    if !text.is_empty() {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                         self.toast("Copied selected text".to_string(), cx);
                         cx.notify();
                         return;
                     }
-            if self.binding_matches("select_all", key, ctrl, alt, shift, super_key)
-                && let Some(view) = self.live_view.clone() {
+                } else if self.live_view.is_none() {
+                    self.ensure_live_view(cx);
+                    return;
+                }
+            }
+            if self.binding_matches("select_all", key, ctrl, alt, shift, super_key) {
+                if let Some(view) = self.live_view.clone() {
                     if let Ok(v) = view.lock() {
                         let _ = v.select_all();
                     }
@@ -943,6 +968,9 @@ impl CleanApp {
                     cx.notify();
                     return;
                 }
+                self.ensure_live_view(cx);
+                return;
+            }
             if self.binding_matches("send", key, ctrl, alt, shift, super_key)
                 && self.model.focused == Some(Field::DraftBody)
             {
@@ -1210,9 +1238,6 @@ impl CleanApp {
         if let Some(id) = self.model.current().map(|m| m.row.id) { self.load_email_images(id, html.as_deref(), cx); }
         if let Some(id) = self.model.current().map(|m| m.row.id) {
             self.load_rendered_email(id, html.as_deref(), cx);
-            if let Some(html) = html.clone() {
-                self.load_live_view(id, html, cx);
-            }
         }
         cx.notify();
 

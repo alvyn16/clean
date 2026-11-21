@@ -219,3 +219,31 @@ mod cache_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// Remove browser profiles left behind by older versions or previous runs.
+/// The active live-view profile is kept while its Chromium is running.
+pub fn prune_browser_profiles() -> usize {
+    let data = config::data_dir();
+    let pid = std::process::id().to_string();
+    let mut removed = 0;
+    // `cdp-profile` belonged to the old persistent renderer and is unused now.
+    let legacy = data.join("cdp-profile");
+    if legacy.is_dir() && std::fs::remove_dir_all(&legacy).is_ok() {
+        removed += 1;
+    }
+    if let Ok(entries) = std::fs::read_dir(&data) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("live-profile-")
+                && !name.contains(&pid)
+                && std::fs::remove_dir_all(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!("pruned {removed} stale browser profiles");
+    }
+    removed
+}

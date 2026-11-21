@@ -69,7 +69,10 @@ cargo test        # engine tests
 The first GPUI build is heavy. `make` uses `CARGO_BUILD_JOBS=8`; adjust for your machine.
 
 Mail renders and downloaded images are cached under `~/.local/share/clean/`. Stale
-entries (older than 14 days) are pruned automatically at startup and rebuilt on demand.
+entries (older than 14 days) and browser profiles from previous runs are pruned
+automatically at startup. The Chromium page used for text selection starts only
+when you first try to select or copy text in an HTML email, so an idle app keeps no
+browser helper processes alive.
 
 ### Embedding a Google OAuth client (for distribution)
 

@@ -708,7 +708,10 @@ fn render_body(app: &CleanApp, message: &UiMessage, cx: &mut Context<CleanApp>) 
                         .w(px(720.0))
                         .flex_shrink_0()
                         .object_fit(gpui_kit::ObjectFit::Contain)
-                        .rounded(px(4.0)),
+                        .rounded(px(4.0))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.ensure_live_view(cx);
+                        })),
                 )
                 .into_any_element();
         }
