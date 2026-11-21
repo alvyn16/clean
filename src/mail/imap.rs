@@ -294,6 +294,15 @@ impl Session {
     }
 
     /// Flags currently set on a message (for verification after an action).
+    /// UID and flags for a specific set of cached UIDs. Missing UIDs were
+    /// expunged on the server; differing flags were changed elsewhere.
+    pub fn uids_and_flags_for(&mut self, folder: &str, uids: &[u32]) -> Result<Vec<(u32, String)>> {
+        match self {
+            Self::Tls(session) => uids_and_flags_for(session, folder, uids),
+            Self::Plain(session) => uids_and_flags_for(session, folder, uids),
+        }
+    }
+
     pub fn flags_for(&mut self, folder: &str, uid: u32) -> Result<String> {
         match self {
             Self::Tls(session) => flags_for(session, folder, uid),
@@ -452,6 +461,35 @@ fn mark_seen<T: Read + Write>(
     session.select(folder)?;
     session.uid_store(uid.to_string(), "+FLAGS (\\Seen)")?;
     Ok(())
+}
+
+fn uids_and_flags_for<T: Read + Write>(
+    session: &mut imap::Session<T>,
+    folder: &str,
+    uids: &[u32],
+) -> Result<Vec<(u32, String)>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    session.select(folder)?;
+    let sequence = uids
+        .iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let fetches = session.uid_fetch(sequence, "(UID FLAGS)")?;
+    let mut rows = Vec::with_capacity(fetches.len());
+    for fetch in fetches.iter() {
+        let Some(uid) = fetch.uid else { continue };
+        let flags = fetch
+            .flags()
+            .iter()
+            .map(|flag| flag.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        rows.push((uid, flags));
+    }
+    Ok(rows)
 }
 
 fn flags_for<T: Read + Write>(

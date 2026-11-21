@@ -1464,6 +1464,8 @@ impl CleanApp {
                     let config = config.clone();
                     async move {
                         let mut total = 0;
+                        let mut removed = 0;
+                        let mut updated = 0;
                         let mut failures = 0;
                         let db = crate::db::Db::open_default();
                         for account in &accounts {
@@ -1472,16 +1474,20 @@ impl CleanApp {
                                 Err(error) => Err(anyhow::anyhow!(error.to_string())),
                             };
                             match result {
-                                Ok(report) => total += report.fetched,
+                                Ok(report) => {
+                                    total += report.fetched;
+                                    removed += report.removed;
+                                    updated += report.updated;
+                                }
                                 Err(_) => failures += 1,
                             }
                         }
-                        (total, failures)
+                        (total, removed, updated, failures)
                     }
                 });
-                let (total, failures) = task.await;
+                let (total, removed, updated, failures) = task.await;
                 this.update(cx, |this, cx| {
-                    if total > 0 {
+                    if total > 0 || removed > 0 || updated > 0 {
                         this.reload_mail(cx);
                         // Pre-render the newest few messages so clicking is instant.
                         let top: Vec<(i64, crate::db::MessageRow)> = this
@@ -1504,6 +1510,11 @@ impl CleanApp {
                             "1 new message".to_string()
                         } else {
                             format!("{total} new messages")
+                        };
+                        let msg = if removed > 0 {
+                            format!("{msg} · {removed} removed")
+                        } else {
+                            msg
                         };
                         this.model.sync_note = Some(msg.clone());
                         this.toast(msg, cx);
@@ -1539,6 +1550,8 @@ impl CleanApp {
         let accounts = config.accounts.clone();
         let task = cx.background_executor().spawn(async move {
             let mut total = 0;
+            let mut removed = 0;
+            let mut updated = 0;
             let mut failures = 0;
             let db = crate::db::Db::open_default();
             for account in &accounts {
@@ -1547,20 +1560,26 @@ impl CleanApp {
                     Err(error) => Err(anyhow::anyhow!(error.to_string())),
                 };
                 match result {
-                    Ok(report) => total += report.fetched,
+                    Ok(report) => {
+                        total += report.fetched;
+                        removed += report.removed;
+                        updated += report.updated;
+                    }
                     Err(_) => failures += 1,
                 }
             }
-            (total, failures)
+            (total, removed, updated, failures)
         });
 
         cx.spawn(async move |this, cx| {
-            let (total, failures) = task.await;
+            let (total, removed, updated, failures) = task.await;
             this.update(cx, |this, cx| {
                 this.model.syncing = false;
                 this.reload_mail(cx);
                 let note = match failures {
-                    0 => format!("Synced · {total} new message{}", if total == 1 { "" } else { "s" }),
+                    0 => format!(
+                        "Synced · {total} new · {removed} removed · {updated} updated"
+                    ),
                     _ => format!("Synced · {total} new · {failures} account(s) failed"),
                 };
                 this.model.sync_note = Some(note.clone());

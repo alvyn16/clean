@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use tracing::{info, warn};
 
@@ -13,6 +15,17 @@ pub struct SyncReport {
     pub folders: u32,
     pub fetched: u32,
     pub failed: u32,
+    /// Messages removed from the cache because the server no longer has them.
+    pub removed: u32,
+    /// Cached flag changes mirrored from the server.
+    pub updated: u32,
+}
+
+fn normalize_flags(flags: &str) -> String {
+    let mut parts: Vec<&str> = flags.split_whitespace().collect();
+    parts.sort_unstable();
+    parts.dedup();
+    parts.join(" ")
 }
 
 /// Pull recent headers for every selectable folder. Bodies are fetched lazily
@@ -36,9 +49,11 @@ pub fn sync_account(
         }
 
         match sync_folder(&mut session, db, account, folder, role, limit) {
-            Ok(fetched) => {
+            Ok(folder_report) => {
                 report.folders += 1;
-                report.fetched += fetched;
+                report.fetched += folder_report.0;
+                report.removed += folder_report.1;
+                report.updated += folder_report.2;
             }
             Err(error) => {
                 report.failed += 1;
@@ -49,8 +64,8 @@ pub fn sync_account(
 
     session.logout();
     info!(
-        "synced {} folder(s), {} new message(s), {} failure(s)",
-        report.folders, report.fetched, report.failed
+        "synced {} folder(s), {} new, {} removed, {} flags updated, {} failure(s)",
+        report.folders, report.fetched, report.removed, report.updated, report.failed
     );
     Ok(report)
 }
@@ -62,7 +77,7 @@ fn sync_folder(
     folder: &imap::RemoteFolder,
     role: FolderRole,
     limit: u32,
-) -> Result<u32> {
+) -> Result<(u32, u32, u32)> {
     let info = session.select(&folder.name)?;
     let total = info.exists;
     let unread = session.unseen_count(&folder.name).unwrap_or(0);
@@ -81,10 +96,24 @@ fn sync_folder(
         })?;
         // Drafts live in the `drafts` table; drop any legacy message rows.
         let _ = db.clear_folder_messages(&account.id, &folder.name);
-        return Ok(fetched);
+        return Ok((fetched, 0, 0));
     }
 
-    let cached_max = db.max_uid(&account.id, &folder.name)?;
+    let mut cached_max = db.max_uid(&account.id, &folder.name)?;
+    // A changed UIDVALIDITY invalidates every cached UID in the folder.
+    let validity_changed = db
+        .folder_by_name(&account.id, &folder.name)
+        .ok()
+        .flatten()
+        .is_some_and(|cached| {
+            cached.uid_validity != 0
+                && info.uid_validity != 0
+                && cached.uid_validity != info.uid_validity
+        });
+    if validity_changed {
+        db.clear_folder_messages(&account.id, &folder.name)?;
+        cached_max = 0;
+    }
     let last = info.uid_next.saturating_sub(1).max(cached_max);
     let first = if cached_max == 0 {
         info.uid_next.saturating_sub(limit).max(1)
@@ -144,6 +173,8 @@ fn sync_folder(
         }
     }
 
+    let (removed, updated) = reconcile_cache(session, db, account, &folder.name, &info, validity_changed);
+
     db.upsert_folder(&FolderRow {
         account_id: account.id.clone(),
         name: folder.name.clone(),
@@ -155,10 +186,65 @@ fn sync_folder(
         unread,
     })?;
 
-    if fetched > 0 {
-        info!("{}: {} new message(s)", folder.name, fetched);
+    if fetched > 0 || removed > 0 || updated > 0 {
+        info!(
+            "{}: {} new, {} removed, {} flags updated",
+            folder.name, fetched, removed, updated
+        );
     }
-    Ok(fetched)
+    Ok((fetched, removed, updated))
+}
+
+/// Bring cached UIDs and flags in line with the server. Only the UIDs we
+/// actually cache are queried, so this stays cheap even for a 10k-message
+/// mailbox while still catching every expunge and flag change in the cache.
+fn reconcile_cache(
+    session: &mut imap::Session,
+    db: &Db,
+    account: &AccountConfig,
+    folder_name: &str,
+    info: &imap::MailboxInfo,
+    validity_changed: bool,
+) -> (u32, u32) {
+    if info.uid_validity == 0 {
+        return (0, 0);
+    }
+    if validity_changed {
+        // Everything was already dropped before the header fetch.
+        return (0, 0);
+    }
+    let cached = db
+        .messages_in_uid_range(&account.id, folder_name, 1, u32::MAX)
+        .unwrap_or_default();
+    if cached.is_empty() {
+        return (0, 0);
+    }
+    let mut uids: Vec<u32> = cached.iter().map(|(_, uid, _)| *uid).collect();
+    uids.sort_unstable();
+    uids.dedup();
+
+    let mut removed = 0;
+    let mut updated = 0;
+    match session.uids_and_flags_for(folder_name, &uids) {
+        Ok(remote) => {
+            let server: HashMap<u32, String> = remote.into_iter().collect();
+            for (id, uid, local_flags) in cached {
+                match server.get(&uid) {
+                    None => {
+                        let _ = db.delete_message(id);
+                        removed += 1;
+                    }
+                    Some(flags) if normalize_flags(&local_flags) != normalize_flags(flags) => {
+                        let _ = db.set_flags(id, flags);
+                        updated += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Err(error) => warn!("could not reconcile cached UIDs in {folder_name}: {error:#}"),
+    }
+    (removed, updated)
 }
 
 /// Import drafts from the server and forget ones deleted elsewhere.
@@ -290,4 +376,108 @@ pub fn fetch_body(
     }
 
     Ok((body_text, body_html))
+}
+
+#[cfg(test)]
+mod reconciliation_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_flag_order() {
+        assert_eq!(normalize_flags(r"\Seen \Flagged \Seen"), r"\Flagged \Seen");
+        assert_eq!(normalize_flags(""), "");
+    }
+
+
+    #[test]
+    #[ignore]
+    fn reconciles_deletions_and_flags() {
+        let config = Config::load().expect("config");
+        let account = config.accounts.first().expect("account").clone();
+        let sender = config.accounts.get(1).cloned().unwrap_or_else(|| account.clone());
+        let sender_credential = auth::credential(&sender, &config).expect("sender auth");
+        let secret = match &sender_credential {
+            crate::mail::imap::Credential::Password(v) => v.clone(),
+            crate::mail::imap::Credential::OAuth(v) => v.clone(),
+        };
+        let id = format!(
+            "clean-reconcile-{}@clean.local",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let from = crate::mail::MailAddress {
+            name: sender.display_name.clone(),
+            email: sender.email.clone(),
+        };
+        let draft = crate::mail::Draft {
+            from: from.clone(),
+            to: vec![crate::mail::MailAddress {
+                name: account.display_name.clone(),
+                email: account.email.clone(),
+            }],
+            subject: "clean reconcile test".into(),
+            body_text: "temporary".into(),
+            message_id: Some(id.clone()),
+            ..Default::default()
+        };
+        let db = Db::open_default().expect("db");
+        // Clear leftovers from earlier runs.
+        let stale: Vec<(i64, String)> = db
+            .messages_in_uid_range(&account.id, "INBOX", 1, u32::MAX)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(row_id, _, _)| {
+                db.message(row_id).ok().flatten().and_then(|m| {
+                    if m.subject == "clean reconcile test" {
+                        m.message_id.map(|mid| (row_id, mid))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        if !stale.is_empty() {
+            let cred = auth::credential(&account, &config).unwrap();
+            let mut session = imap::connect(&account, &cred).unwrap();
+            for (row_id, mid) in stale {
+                let _ = session.delete_by_message_id("INBOX", &mid);
+                let _ = db.delete_message(row_id);
+            }
+            session.logout();
+        }
+        crate::mail::smtp::send(&sender, &secret, &draft).expect("deliver message");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        sync_account(&config, &db, &account, 50).expect("initial sync");
+        let row = db
+            .messages_in_uid_range(&account.id, "INBOX", 1, u32::MAX)
+            .unwrap()
+            .into_iter()
+            .find_map(|(db_id, uid, _)| {
+                db.message(db_id)
+                    .ok()
+                    .flatten()
+                    .filter(|m| m.message_id.as_deref() == Some(id.as_str()))
+                    .map(|m| (m.id, uid))
+            })
+            .expect("imported test message");
+
+        let credential = auth::credential(&account, &config).expect("credential");
+        let mut session = imap::connect(&account, &credential).expect("connect");
+        session.uid_store("INBOX", row.1, "+FLAGS (\\Flagged)").expect("flag message");
+        sync_account(&config, &db, &account, 50).expect("flag sync");
+        assert!(db.message(row.0).unwrap().unwrap().flags.contains("\\Flagged"));
+
+        session.uid_store("INBOX", row.1, "-FLAGS (\\Flagged)").expect("unflag message");
+        sync_account(&config, &db, &account, 50).expect("unflag sync");
+        assert!(!db.message(row.0).unwrap().unwrap().flags.contains("\\Flagged"));
+
+        session.delete_by_message_id("INBOX", &id).expect("delete test message");
+        session.logout();
+        sync_account(&config, &db, &account, 50).expect("delete sync");
+        assert!(db.message(row.0).unwrap().is_none(), "expunged message still cached");
+        println!("reconciled deletion and flag changes");
+    }
 }

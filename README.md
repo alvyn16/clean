@@ -20,7 +20,9 @@ account setup.
 - Local-first: SQLite cache with FTS5 full-text search, credentials in the GNOME/Secret
   Service keyring, no telemetry.
 - IMAP sync with IDLE for instant new mail, lazy body fetching, mark-as-seen, and
-  real message actions mirrored to the server.
+  real message actions mirrored to the server. Each sync also reconciles the
+  local cache: messages expunged or flagged in another client are removed or
+  updated, and a changed UIDVALIDITY rebuilds that folder's cache.
 - Attachments: decode and cache files from incoming mail, open with the desktop
   default app or save to Downloads, and attach local files when composing (file
   picker or paste a path). Sent copies and drafts include the same files.

@@ -365,8 +365,40 @@ impl Db {
     }
 
     pub fn delete_message(&self, id: i64) -> Result<()> {
+        let paths: Vec<String> = self
+            .conn
+            .prepare("SELECT path FROM attachments WHERE message_id = ?1")?
+            .query_map(params![id], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        for path in paths {
+            let _ = std::fs::remove_file(&path);
+            if let Some(dir) = std::path::Path::new(&path).parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+        self.conn.execute("DELETE FROM attachments WHERE message_id = ?1", params![id])?;
         self.conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Cached message ids, UIDs and flags inside a folder's UID window.
+    pub fn messages_in_uid_range(
+        &self,
+        account_id: &str,
+        folder: &str,
+        first: u32,
+        last: u32,
+    ) -> Result<Vec<(i64, u32, String)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, uid, flags FROM messages
+             WHERE account_id = ?1 AND folder = ?2 AND uid BETWEEN ?3 AND ?4",
+        )?;
+        let rows = statement.query_map(
+            params![account_id, folder, first as i64, last as i64],
+            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u32, row.get(2)?)),
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Drop every cached message row for one folder (used for the Drafts
